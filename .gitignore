@@ -1,0 +1,16 @@
+# Ignorar arquivos de configuração sensíveis
+config.env
+secrets.json
+credentials.yml
+
+# Ignorar diretórios
+data/
+runtime/				# Ambientes virtuais Python
+node_modules/           # Dependências do Node.js
+__pycache__/            # Arquivos compilados do Python
+logs/                   # Logs da aplicação
+
+# Ignorar arquivos específicos
+*.log                   # Qualquer arquivo .log
+*.sqlite                # Bancos de dados SQLite
+*.csv
