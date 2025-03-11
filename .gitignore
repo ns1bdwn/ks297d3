@@ -4,8 +4,7 @@ secrets.json
 credentials.yml
 
 # Ignorar diretórios
-data/
-runtime/				# Ambientes virtuais Python
+env/					# Ambientes virtuais Python
 node_modules/           # Dependências do Node.js
 __pycache__/            # Arquivos compilados do Python
 logs/                   # Logs da aplicação
