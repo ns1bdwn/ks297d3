@@ -8,7 +8,7 @@ import logging
 import json
 import os
 import xmltodict  # Para processar respostas XML
-import pandas as pd
+import pandas as pd  # Importação necessária para DataFrame
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Tuple
 
@@ -156,79 +156,76 @@ class SenadoAPI:
             logger.error(f"Erro ao salvar no cache para {endpoint}: {str(e)}")
             return False
     
-    # src/intelligence/collectors/senado_api.py
-# [Adicione estas modificações no início do método _make_request]
-
-def _make_request(self, endpoint: str, params: Dict = None) -> Tuple[Dict, bool]:
-    """
-    Faz uma requisição à API do Senado, com suporte a cache.
-    
-    Args:
-        endpoint: Endpoint da API
-        params: Parâmetros da requisição
+    def _make_request(self, endpoint: str, params: Dict = None) -> Tuple[Dict, bool]:
+        """
+        Faz uma requisição à API do Senado, com suporte a cache.
         
-    Returns:
-        Tupla (dados da resposta, booleano indicando se veio do cache)
-    """
-    if params is None:
-        params = {}
-    
-    # LOG DETALHADO - adicione estas linhas
-    logger.debug(f"Iniciando requisição para endpoint: {endpoint}")
-    logger.debug(f"Parâmetros: {json.dumps(params, ensure_ascii=False)}")
-    
-    # Verificar se existe no cache
-    cached_data = self._load_from_cache(endpoint, params)
-    if cached_data is not None:
-        logger.debug(f"Dados encontrados no cache para {endpoint}")
-        return cached_data, True
-    
-    # Construir URL
-    url = f"{self.BASE_URL}/{endpoint}"
-    logger.debug(f"URL completa: {url}")
-    
-    try:
-        # Fazer requisição
-        logger.debug(f"Iniciando requisição HTTP para: {url}")
-        response = self.session.get(url, params=params)
+        Args:
+            endpoint: Endpoint da API
+            params: Parâmetros da requisição
+            
+        Returns:
+            Tupla (dados da resposta, booleano indicando se veio do cache)
+        """
+        if params is None:
+            params = {}
         
-        # LOG ADICIONAL - Adicione estas linhas
-        logger.debug(f"Status code: {response.status_code}")
-        logger.debug(f"Headers: {dict(response.headers)}")
+        # LOG DETALHADO
+        logger.debug(f"Iniciando requisição para endpoint: {endpoint}")
+        logger.debug(f"Parâmetros: {json.dumps(params, ensure_ascii=False)}")
         
-        # Verificar resposta
-        if response.status_code == 200:
-            try:
-                # LOG ADICIONAL - Adicione esta linha
-                content_peek = response.text[:500] + "..." if len(response.text) > 500 else response.text
-                logger.debug(f"Preview do conteúdo: {content_peek}")
-                
-                # Verificar se é XML (o formato padrão da API do Senado)
-                if 'xml' in response.headers.get('Content-Type', '').lower():
-                    # Converter XML para dicionário
-                    logger.debug("Convertendo resposta XML para dicionário")
-                    data = xmltodict.parse(response.content)
-                else:
-                    # Tentar como JSON
-                    logger.debug("Tentando processar resposta como JSON")
-                    data = response.json()
-                
-                # Salvar no cache
-                self._save_to_cache(endpoint, params, data)
-                
-                return data, False
-            except Exception as e:
-                logger.error(f"Erro ao processar resposta para {endpoint}: {str(e)}")
-                logger.debug(f"Conteúdo da resposta: {response.text[:500]}...")
+        # Verificar se existe no cache
+        cached_data = self._load_from_cache(endpoint, params)
+        if cached_data is not None:
+            logger.debug(f"Dados encontrados no cache para {endpoint}")
+            return cached_data, True
+        
+        # Construir URL
+        url = f"{self.BASE_URL}/{endpoint}"
+        logger.debug(f"URL completa: {url}")
+        
+        try:
+            # Fazer requisição
+            logger.debug(f"Iniciando requisição HTTP para: {url}")
+            response = self.session.get(url, params=params)
+            
+            # LOG ADICIONAL
+            logger.debug(f"Status code: {response.status_code}")
+            logger.debug(f"Headers: {dict(response.headers)}")
+            
+            # Verificar resposta
+            if response.status_code == 200:
+                try:
+                    # LOG ADICIONAL
+                    content_peek = response.text[:500] + "..." if len(response.text) > 500 else response.text
+                    logger.debug(f"Preview do conteúdo: {content_peek}")
+                    
+                    # Verificar se é XML (o formato padrão da API do Senado)
+                    if 'xml' in response.headers.get('Content-Type', '').lower():
+                        # Converter XML para dicionário
+                        logger.debug("Convertendo resposta XML para dicionário")
+                        data = xmltodict.parse(response.content)
+                    else:
+                        # Tentar como JSON
+                        logger.debug("Tentando processar resposta como JSON")
+                        data = response.json()
+                    
+                    # Salvar no cache
+                    self._save_to_cache(endpoint, params, data)
+                    
+                    return data, False
+                except Exception as e:
+                    logger.error(f"Erro ao processar resposta para {endpoint}: {str(e)}")
+                    logger.debug(f"Conteúdo da resposta: {response.text[:500]}...")
+                    return {}, False
+            else:
+                logger.error(f"Erro {response.status_code} ao acessar {endpoint}: {response.text}")
                 return {}, False
-        else:
-            logger.error(f"Erro {response.status_code} ao acessar {endpoint}: {response.text}")
+        except Exception as e:
+            logger.error(f"Erro ao fazer requisição para {endpoint}: {str(e)}")
             return {}, False
-    except Exception as e:
-        logger.error(f"Erro ao fazer requisição para {endpoint}: {str(e)}")
-        return {}, False
     
-    def get_pl_by_id(self, sigla: str, numero: str, ano: str) -> Dict:
+    def get_pl_by_id(self, sigla: str, numero: str, ano: str) -> Dict[str, Any]:
         """
         Obtém detalhes de um PL específico.
         
@@ -238,7 +235,7 @@ def _make_request(self, endpoint: str, params: Dict = None) -> Tuple[Dict, bool]
             ano: Ano do PL
             
         Returns:
-            Dicionário com detalhes do PL
+            Dicionário com detalhes do PL ou vazio se não encontrado
         """
         logger.info(f"Buscando PL {sigla} {numero}/{ano} na API do Senado")
         
@@ -329,43 +326,6 @@ def _make_request(self, endpoint: str, params: Dict = None) -> Tuple[Dict, bool]
         else:
             # Se veio do cache, retorna diretamente
             return data
-    
-    def get_additional_pl_details(self, sigla: str, numero: str, ano: str) -> Dict:
-        """
-        Método que busca detalhes adicionais do PL e consolida com dados básicos.
-        Útil para análise de risco regulatório.
-        
-        Args:
-            sigla: Sigla do PL
-            numero: Número do PL
-            ano: Ano do PL
-            
-        Returns:
-            Dicionário com detalhes enriquecidos do PL
-        """
-        # Buscar detalhes básicos do PL
-        pl_details = self.get_pl_by_id(sigla, numero, ano)
-        
-        if not pl_details:
-            return {}
-        
-        # Adicionar tramitação detalhada se disponível
-        tramitacao = pl_details.get("Tramitacao", [])
-        if tramitacao:
-            # Enriquecer com dados de tramitação específicos para análise
-            pl_details["Tramitacao_Detalhada"] = tramitacao
-        
-        # Buscar projetos relacionados
-        # Em uma versão futura, implementar a busca de projetos relacionados via API
-        projetos_relacionados = []
-        
-        # Adicionar detalhes extra
-        pl_details["detalhes_adicionais"] = {
-            "projetos_relacionados": projetos_relacionados,
-            "autoria_detalhada": []  # Em uma versão futura, enriquecer com mais dados de autoria
-        }
-        
-        return pl_details
     
     def get_pl_tramitacao(self, sigla: str, numero: str, ano: str, codigo_materia: str = None) -> List[Dict]:
         """
@@ -520,6 +480,115 @@ def _make_request(self, endpoint: str, params: Dict = None) -> Tuple[Dict, bool]
         else:
             # Se veio do cache, retorna diretamente
             return data
+    
+    def _extract_autor(self, materia: Dict) -> str:
+        """
+        Extrai o nome do autor de uma matéria detalhada.
+        
+        Args:
+            materia: Dados da matéria
+            
+        Returns:
+            Nome do autor
+        """
+        try:
+            # Primeiro, tentar pegar do DadosBasicosMateria
+            autor_basico = materia.get('DadosBasicosMateria', {}).get('NomeAutor', '')
+            if autor_basico:
+                return autor_basico
+            
+            # Se não tiver lá, tentar na Autoria
+            autoria = materia.get('Autoria', {})
+            if isinstance(autoria, dict):
+                autores = autoria.get('Autor', [])
+                
+                # Garantir que seja uma lista
+                if not isinstance(autores, list):
+                    autores = [autores]
+                
+                # Extrair nomes dos autores
+                nomes_autores = []
+                for autor in autores:
+                    nome = autor.get('NomeAutor', '')
+                    if nome:
+                        nomes_autores.append(nome)
+                
+                # Retornar string com autores separados por vírgula
+                return ", ".join(nomes_autores) if nomes_autores else "Não informado"
+            
+            return "Não informado"
+        except Exception as e:
+            logger.error(f"Erro ao extrair autor: {str(e)}")
+            return "Não informado"
+    
+    def _extract_autor_from_search(self, materia: Dict) -> str:
+        """
+        Extrai o nome do autor de uma matéria retornada pela pesquisa.
+        
+        Args:
+            materia: Dados da matéria da pesquisa
+            
+        Returns:
+            Nome do autor
+        """
+        try:
+            # Na pesquisa, o autor pode estar em formato diferente
+            autor = materia.get('AutoriaMateria', {})
+            if autor:
+                autor_nome = autor.get('Autor', {}).get('NomeAutor', '')
+                if autor_nome:
+                    return autor_nome
+            
+            return "Não informado"
+        except Exception as e:
+            logger.error(f"Erro ao extrair autor da pesquisa: {str(e)}")
+            return "Não informado"
+    
+    def _extract_status_from_search(self, materia: Dict) -> str:
+        """
+        Extrai o status atual de uma matéria retornada pela pesquisa.
+        
+        Args:
+            materia: Dados da matéria da pesquisa
+            
+        Returns:
+            Status atual
+        """
+        try:
+            situacao = materia.get('SituacaoAtual', {})
+            if situacao:
+                situacao_desc = situacao.get('Descricao', {}).get('DescricaoSituacao', '')
+                local = situacao.get('Local', {}).get('NomeLocal', '')
+                
+                if situacao_desc and local:
+                    return f"{situacao_desc} - {local}"
+                elif situacao_desc:
+                    return situacao_desc
+                elif local:
+                    return f"Em tramitação - {local}"
+            
+            return "Status não informado"
+        except Exception as e:
+            logger.error(f"Erro ao extrair status da pesquisa: {str(e)}")
+            return "Status não informado"
+    
+    def _build_pl_url(self, sigla: str, numero: str, ano: str, codigo_materia: str = None) -> str:
+        """
+        Constrói a URL para acessar o PL no site do Senado.
+        
+        Args:
+            sigla: Sigla do PL
+            numero: Número do PL
+            ano: Ano do PL
+            codigo_materia: Código da matéria (para URL mais precisa)
+            
+        Returns:
+            URL para acessar o PL
+        """
+        if codigo_materia:
+            return f"https://www25.senado.leg.br/web/atividade/materias/-/materia/{codigo_materia}"
+        else:
+            return f"https://www25.senado.leg.br/web/atividade/materias/-/materia/busca?b_pesquisaMaterias=proposicao_{sigla}_Projeto+de+Lei_{numero}_{ano}"
     
     def search_pls(self, keywords: List[str] = None, date_from: str = None, 
                   date_to: str = None, author: str = None, limit: int = 20) -> List[Dict]:
@@ -756,115 +825,6 @@ def _make_request(self, endpoint: str, params: Dict = None) -> Tuple[Dict, bool]
         else:
             # Se veio do cache, retorna diretamente
             return data
-    
-    def _extract_autor(self, materia: Dict) -> str:
-        """
-        Extrai o nome do autor de uma matéria detalhada.
-        
-        Args:
-            materia: Dados da matéria
-            
-        Returns:
-            Nome do autor
-        """
-        try:
-            # Primeiro, tentar pegar do DadosBasicosMateria
-            autor_basico = materia.get('DadosBasicosMateria', {}).get('NomeAutor', '')
-            if autor_basico:
-                return autor_basico
-            
-            # Se não tiver lá, tentar na Autoria
-            autoria = materia.get('Autoria', {})
-            if isinstance(autoria, dict):
-                autores = autoria.get('Autor', [])
-                
-                # Garantir que seja uma lista
-                if not isinstance(autores, list):
-                    autores = [autores]
-                
-                # Extrair nomes dos autores
-                nomes_autores = []
-                for autor in autores:
-                    nome = autor.get('NomeAutor', '')
-                    if nome:
-                        nomes_autores.append(nome)
-                
-                # Retornar string com autores separados por vírgula
-                return ", ".join(nomes_autores) if nomes_autores else "Não informado"
-            
-            return "Não informado"
-        except Exception as e:
-            logger.error(f"Erro ao extrair autor: {str(e)}")
-            return "Não informado"
-    
-    def _extract_autor_from_search(self, materia: Dict) -> str:
-        """
-        Extrai o nome do autor de uma matéria retornada pela pesquisa.
-        
-        Args:
-            materia: Dados da matéria da pesquisa
-            
-        Returns:
-            Nome do autor
-        """
-        try:
-            # Na pesquisa, o autor pode estar em formato diferente
-            autor = materia.get('AutoriaMateria', {})
-            if autor:
-                autor_nome = autor.get('Autor', {}).get('NomeAutor', '')
-                if autor_nome:
-                    return autor_nome
-            
-            return "Não informado"
-        except Exception as e:
-            logger.error(f"Erro ao extrair autor da pesquisa: {str(e)}")
-            return "Não informado"
-    
-    def _extract_status_from_search(self, materia: Dict) -> str:
-        """
-        Extrai o status atual de uma matéria retornada pela pesquisa.
-        
-        Args:
-            materia: Dados da matéria da pesquisa
-            
-        Returns:
-            Status atual
-        """
-        try:
-            situacao = materia.get('SituacaoAtual', {})
-            if situacao:
-                situacao_desc = situacao.get('Descricao', {}).get('DescricaoSituacao', '')
-                local = situacao.get('Local', {}).get('NomeLocal', '')
-                
-                if situacao_desc and local:
-                    return f"{situacao_desc} - {local}"
-                elif situacao_desc:
-                    return situacao_desc
-                elif local:
-                    return f"Em tramitação - {local}"
-            
-            return "Status não informado"
-        except Exception as e:
-            logger.error(f"Erro ao extrair status da pesquisa: {str(e)}")
-            return "Status não informado"
-    
-    def _build_pl_url(self, sigla: str, numero: str, ano: str, codigo_materia: str = None) -> str:
-        """
-        Constrói a URL para acessar o PL no site do Senado.
-        
-        Args:
-            sigla: Sigla do PL
-            numero: Número do PL
-            ano: Ano do PL
-            codigo_materia: Código da matéria (para URL mais precisa)
-            
-        Returns:
-            URL para acessar o PL
-        """
-        if codigo_materia:
-            return f"https://www25.senado.leg.br/web/atividade/materias/-/materia/{codigo_materia}"
-        else:
-            return f"https://www25.senado.leg.br/web/atividade/materias/-/materia/busca?b_pesquisaMaterias=proposicao_PL_Projeto+de+Lei_{numero}_{ano}"
 
 # Testes básicos
 if __name__ == "__main__":
