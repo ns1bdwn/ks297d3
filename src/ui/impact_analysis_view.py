@@ -19,6 +19,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 
 # Importar componentes necessários
 from src.intelligence.utils.predefined_pls import PredefinedPLManager
+
+# Tenta importar o analisador de riscos
 try:
     from src.intelligence.analysis.pl_risk_analysis import PLRiskAnalyzer
 except ImportError:
@@ -29,10 +31,82 @@ except ImportError:
             os.makedirs(self.data_dir, exist_ok=True)
             
         def analyze_pl_risk(self, sigla, numero, ano, force_refresh=False):
+            try:
+                # Tentar usar o collector básico para obter dados
+                from src.intelligence.collectors.senado_collector import SenadoCollector
+                collector = SenadoCollector()
+                pl_dados = collector.get_pl_by_id(sigla, numero, ano)
+                
+                if pl_dados:
+                    # Extrai informações básicas do PL para criar análise simples
+                    return {
+                        "pl_id": f"{sigla} {numero}/{ano}",
+                        "timestamp": datetime.now().timestamp(),
+                        "data_atualizacao": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "titulo": pl_dados.get("Título", "Título não disponível"),
+                        "autor": pl_dados.get("Autor", "Não informado"),
+                        "status_atual": {
+                            "local": pl_dados.get("Status", "").split(" - ")[1] if " - " in pl_dados.get("Status", "") else "",
+                            "situacao": pl_dados.get("Status", "").split(" - ")[0] if " - " in pl_dados.get("Status", "") else pl_dados.get("Status", ""),
+                            "data": pl_dados.get("Data", "")
+                        },
+                        "risco_aprovacao": {
+                            "score": 50, 
+                            "nivel": "Médio", 
+                            "fatores": [
+                                {"fator": "Análise simplificada", 
+                                 "descricao": "Usando dados básicos do collector", 
+                                 "impacto": "Neutro",
+                                 "explicacao": "Analisador completo não disponível, usando estimativa básica"}
+                            ]
+                        },
+                        "tempo_estimado": {
+                            "estimativa": "6-12 meses", 
+                            "fatores": [
+                                {"fator": "Estimativa padrão", 
+                                 "descricao": "Baseado em tempo médio de tramitação no Congresso", 
+                                 "impacto": "Neutro",
+                                 "explicacao": "Analisador completo não disponível, usando estimativa padrão"}
+                            ]
+                        },
+                        "proximos_passos": [
+                            {"passo": "Análise em comissões", 
+                             "probabilidade": "Média", 
+                             "observacao": "Processo padrão de tramitação",
+                             "contexto": "Análise simplificada, sem avaliação detalhada"
+                            },
+                            {"passo": "Votação em plenário", 
+                             "probabilidade": "Baixa", 
+                             "observacao": "Após análise em comissões",
+                             "contexto": "Processo padrão de tramitação legislativa"
+                            }
+                        ],
+                        "analise_politica": {
+                            "tendencia": "Indefinida", 
+                            "contexto_politico": f"PL apresentado por {pl_dados.get('Autor', 'autor não identificado')}. Status atual: {pl_dados.get('Status', 'não disponível')}.", 
+                            "impacto_setorial": "Análise completa indisponível. Recomenda-se avaliar o texto completo do PL."
+                        },
+                        "ultimos_eventos": [],
+                        "detalhes_autoria": [
+                            {
+                                "nome": pl_dados.get("Autor", "Não informado"),
+                                "tipo": "Parlamentar" if "Senador" in pl_dados.get("Autor", "") or "Deputado" in pl_dados.get("Autor", "") else "Não identificado",
+                                "partido": "",
+                                "uf": ""
+                            }
+                        ]
+                    }
+            except Exception as e:
+                logger.error(f"Erro no fallback: {str(e)}")
+                
+            # Fallback padrão se tudo falhar
             return {
                 "pl_id": f"{sigla} {numero}/{ano}",
                 "timestamp": datetime.now().timestamp(),
-                "titulo": "PL não disponível para análise",
+                "data_atualizacao": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "titulo": "PL não disponível para análise detalhada",
+                "autor": "Não disponível",
+                "status_atual": {"local": "", "situacao": "Não disponível", "data": ""},
                 "risco_aprovacao": {"score": 50, "nivel": "Médio", "fatores": []},
                 "tempo_estimado": {"estimativa": "Não disponível", "fatores": []},
                 "proximos_passos": [{"passo": "Análise não disponível", "probabilidade": "N/A", "observacao": "Componente de análise não carregado"}],
@@ -729,7 +803,6 @@ def _render_sector_analysis():
     
     # Instanciar analisador de risco
     try:
-        from src.intelligence.analysis.pl_risk_analysis import PLRiskAnalyzer
         risk_analyzer = PLRiskAnalyzer()
         
         # Tentar obter visão setorial

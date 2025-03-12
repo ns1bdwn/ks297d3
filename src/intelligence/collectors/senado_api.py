@@ -156,57 +156,77 @@ class SenadoAPI:
             logger.error(f"Erro ao salvar no cache para {endpoint}: {str(e)}")
             return False
     
-    def _make_request(self, endpoint: str, params: Dict = None) -> Tuple[Dict, bool]:
-        """
-        Faz uma requisição à API do Senado, com suporte a cache.
+    # src/intelligence/collectors/senado_api.py
+# [Adicione estas modificações no início do método _make_request]
+
+def _make_request(self, endpoint: str, params: Dict = None) -> Tuple[Dict, bool]:
+    """
+    Faz uma requisição à API do Senado, com suporte a cache.
+    
+    Args:
+        endpoint: Endpoint da API
+        params: Parâmetros da requisição
         
-        Args:
-            endpoint: Endpoint da API
-            params: Parâmetros da requisição
-            
-        Returns:
-            Tupla (dados da resposta, booleano indicando se veio do cache)
-        """
-        if params is None:
-            params = {}
+    Returns:
+        Tupla (dados da resposta, booleano indicando se veio do cache)
+    """
+    if params is None:
+        params = {}
+    
+    # LOG DETALHADO - adicione estas linhas
+    logger.debug(f"Iniciando requisição para endpoint: {endpoint}")
+    logger.debug(f"Parâmetros: {json.dumps(params, ensure_ascii=False)}")
+    
+    # Verificar se existe no cache
+    cached_data = self._load_from_cache(endpoint, params)
+    if cached_data is not None:
+        logger.debug(f"Dados encontrados no cache para {endpoint}")
+        return cached_data, True
+    
+    # Construir URL
+    url = f"{self.BASE_URL}/{endpoint}"
+    logger.debug(f"URL completa: {url}")
+    
+    try:
+        # Fazer requisição
+        logger.debug(f"Iniciando requisição HTTP para: {url}")
+        response = self.session.get(url, params=params)
         
-        # Verificar se existe no cache
-        cached_data = self._load_from_cache(endpoint, params)
-        if cached_data is not None:
-            return cached_data, True
+        # LOG ADICIONAL - Adicione estas linhas
+        logger.debug(f"Status code: {response.status_code}")
+        logger.debug(f"Headers: {dict(response.headers)}")
         
-        # Construir URL
-        url = f"{self.BASE_URL}/{endpoint}"
-        
-        try:
-            # Fazer requisição
-            response = self.session.get(url, params=params)
-            
-            # Verificar resposta
-            if response.status_code == 200:
-                try:
-                    # Verificar se é XML (o formato padrão da API do Senado)
-                    if 'xml' in response.headers.get('Content-Type', '').lower():
-                        # Converter XML para dicionário
-                        data = xmltodict.parse(response.content)
-                    else:
-                        # Tentar como JSON
-                        data = response.json()
-                    
-                    # Salvar no cache
-                    self._save_to_cache(endpoint, params, data)
-                    
-                    return data, False
-                except Exception as e:
-                    logger.error(f"Erro ao processar resposta para {endpoint}: {str(e)}")
-                    logger.debug(f"Conteúdo da resposta: {response.text[:500]}...")
-                    return {}, False
-            else:
-                logger.error(f"Erro {response.status_code} ao acessar {endpoint}: {response.text}")
+        # Verificar resposta
+        if response.status_code == 200:
+            try:
+                # LOG ADICIONAL - Adicione esta linha
+                content_peek = response.text[:500] + "..." if len(response.text) > 500 else response.text
+                logger.debug(f"Preview do conteúdo: {content_peek}")
+                
+                # Verificar se é XML (o formato padrão da API do Senado)
+                if 'xml' in response.headers.get('Content-Type', '').lower():
+                    # Converter XML para dicionário
+                    logger.debug("Convertendo resposta XML para dicionário")
+                    data = xmltodict.parse(response.content)
+                else:
+                    # Tentar como JSON
+                    logger.debug("Tentando processar resposta como JSON")
+                    data = response.json()
+                
+                # Salvar no cache
+                self._save_to_cache(endpoint, params, data)
+                
+                return data, False
+            except Exception as e:
+                logger.error(f"Erro ao processar resposta para {endpoint}: {str(e)}")
+                logger.debug(f"Conteúdo da resposta: {response.text[:500]}...")
                 return {}, False
-        except Exception as e:
-            logger.error(f"Erro ao fazer requisição para {endpoint}: {str(e)}")
+        else:
+            logger.error(f"Erro {response.status_code} ao acessar {endpoint}: {response.text}")
             return {}, False
+    except Exception as e:
+        logger.error(f"Erro ao fazer requisição para {endpoint}: {str(e)}")
+        return {}, False
     
     def get_pl_by_id(self, sigla: str, numero: str, ano: str) -> Dict:
         """
