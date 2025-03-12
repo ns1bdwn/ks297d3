@@ -8,7 +8,6 @@ import logging
 import json
 import os
 import xmltodict  # Para processar respostas XML
-import pandas as pd  # Importação necessária para DataFrame
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Tuple
 
@@ -170,44 +169,27 @@ class SenadoAPI:
         if params is None:
             params = {}
         
-        # LOG DETALHADO
-        logger.debug(f"Iniciando requisição para endpoint: {endpoint}")
-        logger.debug(f"Parâmetros: {json.dumps(params, ensure_ascii=False)}")
-        
         # Verificar se existe no cache
         cached_data = self._load_from_cache(endpoint, params)
         if cached_data is not None:
-            logger.debug(f"Dados encontrados no cache para {endpoint}")
             return cached_data, True
         
         # Construir URL
         url = f"{self.BASE_URL}/{endpoint}"
-        logger.debug(f"URL completa: {url}")
         
         try:
             # Fazer requisição
-            logger.debug(f"Iniciando requisição HTTP para: {url}")
             response = self.session.get(url, params=params)
-            
-            # LOG ADICIONAL
-            logger.debug(f"Status code: {response.status_code}")
-            logger.debug(f"Headers: {dict(response.headers)}")
             
             # Verificar resposta
             if response.status_code == 200:
                 try:
-                    # LOG ADICIONAL
-                    content_peek = response.text[:500] + "..." if len(response.text) > 500 else response.text
-                    logger.debug(f"Preview do conteúdo: {content_peek}")
-                    
                     # Verificar se é XML (o formato padrão da API do Senado)
                     if 'xml' in response.headers.get('Content-Type', '').lower():
                         # Converter XML para dicionário
-                        logger.debug("Convertendo resposta XML para dicionário")
                         data = xmltodict.parse(response.content)
                     else:
                         # Tentar como JSON
-                        logger.debug("Tentando processar resposta como JSON")
                         data = response.json()
                     
                     # Salvar no cache
@@ -225,7 +207,7 @@ class SenadoAPI:
             logger.error(f"Erro ao fazer requisição para {endpoint}: {str(e)}")
             return {}, False
     
-    def get_pl_by_id(self, sigla: str, numero: str, ano: str) -> Dict[str, Any]:
+    def get_pl_by_id(self, sigla: str, numero: str, ano: str) -> Dict:
         """
         Obtém detalhes de um PL específico.
         
@@ -235,7 +217,7 @@ class SenadoAPI:
             ano: Ano do PL
             
         Returns:
-            Dicionário com detalhes do PL ou vazio se não encontrado
+            Dicionário com detalhes do PL
         """
         logger.info(f"Buscando PL {sigla} {numero}/{ano} na API do Senado")
         
@@ -326,6 +308,43 @@ class SenadoAPI:
         else:
             # Se veio do cache, retorna diretamente
             return data
+            
+    def get_additional_pl_details(self, sigla: str, numero: str, ano: str) -> Dict[str, Any]:
+        """
+        Obtém detalhes adicionais de um PL específico, formatados para análise de risco.
+        Este método é um wrapper compatível para o PLRiskAnalyzer.
+        
+        Args:
+            sigla: Sigla do PL (ex: PL, PEC)
+            numero: Número do PL
+            ano: Ano do PL
+            
+        Returns:
+            Dicionário com detalhes do PL formatados para análise de risco
+        """
+        # Chamar o método existente para obter detalhes básicos
+        basic_details = self.get_pl_by_id(sigla, numero, ano)
+        
+        if not basic_details:
+            return {}
+        
+        # Adicionar campos extras que o analisador de risco espera
+        details = {
+            **basic_details,  # Manter todos os campos existentes
+            "detalhes_adicionais": {
+                "autoria_detalhada": self._extract_autoria_details(basic_details),
+                "projetos_relacionados": self._find_related_projects(sigla, numero, ano)
+            }
+        }
+        
+        # Garantir que a estrutura está completa com campos esperados pelo analisador
+        if "Tramitacao" not in details:
+            details["Tramitacao"] = []
+        
+        if "Tramitacao_Detalhada" not in details:
+            details["Tramitacao_Detalhada"] = details["Tramitacao"]
+        
+        return details
     
     def get_pl_tramitacao(self, sigla: str, numero: str, ano: str, codigo_materia: str = None) -> List[Dict]:
         """
@@ -481,115 +500,6 @@ class SenadoAPI:
             # Se veio do cache, retorna diretamente
             return data
     
-    def _extract_autor(self, materia: Dict) -> str:
-        """
-        Extrai o nome do autor de uma matéria detalhada.
-        
-        Args:
-            materia: Dados da matéria
-            
-        Returns:
-            Nome do autor
-        """
-        try:
-            # Primeiro, tentar pegar do DadosBasicosMateria
-            autor_basico = materia.get('DadosBasicosMateria', {}).get('NomeAutor', '')
-            if autor_basico:
-                return autor_basico
-            
-            # Se não tiver lá, tentar na Autoria
-            autoria = materia.get('Autoria', {})
-            if isinstance(autoria, dict):
-                autores = autoria.get('Autor', [])
-                
-                # Garantir que seja uma lista
-                if not isinstance(autores, list):
-                    autores = [autores]
-                
-                # Extrair nomes dos autores
-                nomes_autores = []
-                for autor in autores:
-                    nome = autor.get('NomeAutor', '')
-                    if nome:
-                        nomes_autores.append(nome)
-                
-                # Retornar string com autores separados por vírgula
-                return ", ".join(nomes_autores) if nomes_autores else "Não informado"
-            
-            return "Não informado"
-        except Exception as e:
-            logger.error(f"Erro ao extrair autor: {str(e)}")
-            return "Não informado"
-    
-    def _extract_autor_from_search(self, materia: Dict) -> str:
-        """
-        Extrai o nome do autor de uma matéria retornada pela pesquisa.
-        
-        Args:
-            materia: Dados da matéria da pesquisa
-            
-        Returns:
-            Nome do autor
-        """
-        try:
-            # Na pesquisa, o autor pode estar em formato diferente
-            autor = materia.get('AutoriaMateria', {})
-            if autor:
-                autor_nome = autor.get('Autor', {}).get('NomeAutor', '')
-                if autor_nome:
-                    return autor_nome
-            
-            return "Não informado"
-        except Exception as e:
-            logger.error(f"Erro ao extrair autor da pesquisa: {str(e)}")
-            return "Não informado"
-    
-    def _extract_status_from_search(self, materia: Dict) -> str:
-        """
-        Extrai o status atual de uma matéria retornada pela pesquisa.
-        
-        Args:
-            materia: Dados da matéria da pesquisa
-            
-        Returns:
-            Status atual
-        """
-        try:
-            situacao = materia.get('SituacaoAtual', {})
-            if situacao:
-                situacao_desc = situacao.get('Descricao', {}).get('DescricaoSituacao', '')
-                local = situacao.get('Local', {}).get('NomeLocal', '')
-                
-                if situacao_desc and local:
-                    return f"{situacao_desc} - {local}"
-                elif situacao_desc:
-                    return situacao_desc
-                elif local:
-                    return f"Em tramitação - {local}"
-            
-            return "Status não informado"
-        except Exception as e:
-            logger.error(f"Erro ao extrair status da pesquisa: {str(e)}")
-            return "Status não informado"
-    
-    def _build_pl_url(self, sigla: str, numero: str, ano: str, codigo_materia: str = None) -> str:
-        """
-        Constrói a URL para acessar o PL no site do Senado.
-        
-        Args:
-            sigla: Sigla do PL
-            numero: Número do PL
-            ano: Ano do PL
-            codigo_materia: Código da matéria (para URL mais precisa)
-            
-        Returns:
-            URL para acessar o PL
-        """
-        if codigo_materia:
-            return f"https://www25.senado.leg.br/web/atividade/materias/-/materia/{codigo_materia}"
-        else:
-            return f"https://www25.senado.leg.br/web/atividade/materias/-/materia/busca?b_pesquisaMaterias=proposicao_{sigla}_Projeto+de+Lei_{numero}_{ano}"
-    
     def search_pls(self, keywords: List[str] = None, date_from: str = None, 
                   date_to: str = None, author: str = None, limit: int = 20) -> List[Dict]:
         """
@@ -683,6 +593,7 @@ class SenadoAPI:
         Returns:
             DataFrame com os resultados consolidados
         """
+        import pandas as pd
         logger.info(f"Buscando PLs para {len(keywords)} palavras-chave")
         
         all_results = []
@@ -825,6 +736,192 @@ class SenadoAPI:
         else:
             # Se veio do cache, retorna diretamente
             return data
+    
+    def _extract_autor(self, materia: Dict) -> str:
+        """
+        Extrai o nome do autor de uma matéria detalhada.
+        
+        Args:
+            materia: Dados da matéria
+            
+        Returns:
+            Nome do autor
+        """
+        try:
+            # Primeiro, tentar pegar do DadosBasicosMateria
+            autor_basico = materia.get('DadosBasicosMateria', {}).get('NomeAutor', '')
+            if autor_basico:
+                return autor_basico
+            
+            # Se não tiver lá, tentar na Autoria
+            autoria = materia.get('Autoria', {})
+            if isinstance(autoria, dict):
+                autores = autoria.get('Autor', [])
+                
+                # Garantir que seja uma lista
+                if not isinstance(autores, list):
+                    autores = [autores]
+                
+                # Extrair nomes dos autores
+                nomes_autores = []
+                for autor in autores:
+                    nome = autor.get('NomeAutor', '')
+                    if nome:
+                        nomes_autores.append(nome)
+                
+                # Retornar string com autores separados por vírgula
+                return ", ".join(nomes_autores) if nomes_autores else "Não informado"
+            
+            return "Não informado"
+        except Exception as e:
+            logger.error(f"Erro ao extrair autor: {str(e)}")
+            return "Não informado"
+    
+    def _extract_autor_from_search(self, materia: Dict) -> str:
+        """
+        Extrai o nome do autor de uma matéria retornada pela pesquisa.
+        
+        Args:
+            materia: Dados da matéria da pesquisa
+            
+        Returns:
+            Nome do autor
+        """
+        try:
+            # Na pesquisa, o autor pode estar em formato diferente
+            autor = materia.get('AutoriaMateria', {})
+            if autor:
+                autor_nome = autor.get('Autor', {}).get('NomeAutor', '')
+                if autor_nome:
+                    return autor_nome
+            
+            return "Não informado"
+        except Exception as e:
+            logger.error(f"Erro ao extrair autor da pesquisa: {str(e)}")
+            return "Não informado"
+    
+    def _extract_status_from_search(self, materia: Dict) -> str:
+        """
+        Extrai o status atual de uma matéria retornada pela pesquisa.
+        
+        Args:
+            materia: Dados da matéria da pesquisa
+            
+        Returns:
+            Status atual
+        """
+        try:
+            situacao = materia.get('SituacaoAtual', {})
+            if situacao:
+                situacao_desc = situacao.get('Descricao', {}).get('DescricaoSituacao', '')
+                local = situacao.get('Local', {}).get('NomeLocal', '')
+                
+                if situacao_desc and local:
+                    return f"{situacao_desc} - {local}"
+                elif situacao_desc:
+                    return situacao_desc
+                elif local:
+                    return f"Em tramitação - {local}"
+            
+            return "Status não informado"
+        except Exception as e:
+            logger.error(f"Erro ao extrair status da pesquisa: {str(e)}")
+            return "Status não informado"
+    
+    def _build_pl_url(self, sigla: str, numero: str, ano: str, codigo_materia: str = None) -> str:
+        """
+        Constrói a URL para acessar o PL no site do Senado.
+        
+        Args:
+            sigla: Sigla do PL
+            numero: Número do PL
+            ano: Ano do PL
+            codigo_materia: Código da matéria (para URL mais precisa)
+            
+        Returns:
+            URL para acessar o PL
+        """
+        if codigo_materia:
+            return f"https://www25.senado.leg.br/web/atividade/materias/-/materia/{codigo_materia}"
+        else:
+            return f"https://www25.senado.leg.br/web/atividade/materias/-/materia/busca?b_pesquisaMaterias=proposicao_PL_Projeto+de+Lei_{numero}_{ano}"
+    
+    def _extract_autoria_details(self, pl_details: Dict) -> List[Dict]:
+        """
+        Extrai detalhes de autoria de um PL.
+        
+        Args:
+            pl_details: Detalhes do PL
+            
+        Returns:
+            Lista com informações dos autores
+        """
+        autores = []
+        autor_principal = pl_details.get('Autor', '')
+        
+        if autor_principal:
+            # Tentar extrair partido/UF do nome do autor (formato comum: "Nome (Partido/UF)")
+            import re
+            partido_uf_match = re.search(r'\((.*?)\)', autor_principal)
+            if partido_uf_match:
+                partido_uf = partido_uf_match.group(1)
+                # Tentar separar partido e UF
+                if '/' in partido_uf:
+                    partido, uf = partido_uf.split('/')
+                else:
+                    partido, uf = partido_uf, ""
+                    
+                # Limpar nome do autor (remover partido/UF)
+                nome = autor_principal.replace(f"({partido_uf})", "").strip()
+            else:
+                nome = autor_principal
+                partido, uf = "", ""
+            
+            # Determinar tipo de autor
+            tipo = "Parlamentar"  # Tipo padrão
+            if "Senador" in nome or "Senadora" in nome:
+                tipo = "Parlamentar"
+            elif "Executivo" in nome or "Presidente" in nome:
+                tipo = "Poder Executivo"
+            elif "Comissão" in nome:
+                tipo = "Comissão"
+            
+            autores.append({
+                "nome": nome,
+                "tipo": tipo,
+                "partido": partido,
+                "uf": uf
+            })
+        
+        return autores
+
+    def _find_related_projects(self, sigla: str, numero: str, ano: str) -> List[Dict]:
+        """
+        Busca projetos de lei relacionados com o PL atual.
+        
+        Args:
+            sigla: Sigla do PL 
+            numero: Número do PL
+            ano: Ano do PL
+            
+        Returns:
+            Lista de projetos relacionados
+        """
+        # Implementação simplificada - em produção isso usaria
+        # algoritmos de similaridade, palavras-chave comuns, etc.
+        try:
+            # Buscar PLs recentes para simular relacionados
+            related_pls = self.get_recent_pls(limit=5)
+            
+            # Filtrar o próprio PL
+            current_id = f"{sigla} {numero}/{ano}"
+            related_pls = [pl for pl in related_pls if pl.get('ID') != current_id]
+            
+            # Limitar a 2-3 projetos relacionados
+            return related_pls[:3]
+        except Exception as e:
+            logger.error(f"Erro ao buscar projetos relacionados: {str(e)}")
+            return []
 
 # Testes básicos
 if __name__ == "__main__":
