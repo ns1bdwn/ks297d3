@@ -296,6 +296,116 @@ class SenadoAPI:
         else:
             # Se veio do cache, retorna diretamente
             return data
+
+    def get_additional_pl_details(self, sigla: str, numero: str, ano: str) -> Dict:
+        """
+        Obtém detalhes adicionais de um PL específico para enriquecer a análise de impacto.
+        
+        Args:
+            sigla: Sigla do PL (ex: PL, PEC)
+            numero: Número do PL
+            ano: Ano do PL
+            
+        Returns:
+            Dicionário com detalhes enriquecidos do PL
+        """
+        pl_id = f"{sigla} {numero}/{ano}"
+        logger.info(f"Buscando detalhes estendidos para {pl_id}")
+        
+        # Buscar detalhes básicos primeiro
+        basic_details = self.get_pl_details(sigla, numero, ano)
+        
+        # Extrair o código da matéria para consultas adicionais
+        codigo_materia = None
+        try:
+            # Realizar consulta para obter o código da matéria
+            endpoint = f"materia/{sigla}/{numero}/{ano}"
+            data, _ = self._make_request(endpoint)
+            codigo_materia = data.get('DetalheMateria', {}).get('Materia', {}).get('IdentificacaoMateria', {}).get('CodigoMateria')
+        except Exception as e:
+            logger.error(f"Erro ao obter código da matéria: {str(e)}")
+        
+        if not codigo_materia:
+            return basic_details
+        
+        # Dados adicionais a serem coletados
+        additional_details = {
+            "autoria_detalhada": [],
+            "relatores": [],
+            "comissoes_designadas": [],
+            "tempo_medio_tramitacao": None,
+            "taxa_aprovacao_autor": None,
+            "projetos_relacionados": []
+        }
+        
+        # Obter informações detalhadas sobre autoria
+        try:
+            endpoint_autoria = f"materia/autoria/{codigo_materia}"
+            autoria_data, _ = self._make_request(endpoint_autoria)
+            autores = autoria_data.get('AutoriaMateria', {}).get('Materia', {}).get('Autoria', [])
+            
+            if not isinstance(autores, list):
+                autores = [autores]
+                
+            for autor in autores:
+                autor_info = {
+                    "nome": autor.get('Autor', {}).get('NomeAutor', ''),
+                    "tipo": autor.get('Autor', {}).get('TipoAutor', ''),
+                    "partido": autor.get('Autor', {}).get('IdentificacaoParlamentar', {}).get('SiglaPartidoParlamentar', ''),
+                    "uf": autor.get('Autor', {}).get('IdentificacaoParlamentar', {}).get('UfParlamentar', '')
+                }
+                additional_details["autoria_detalhada"].append(autor_info)
+        except Exception as e:
+            logger.error(f"Erro ao obter detalhes de autoria: {str(e)}")
+        
+        # Obter histórico de relatores
+        try:
+            tramitacao = basic_details.get('Tramitacao_Detalhada', [])
+            relatores_set = set()
+            
+            for evento in tramitacao:
+                texto = evento.get('Texto', '').lower()
+                if 'designad' in texto and 'relator' in texto:
+                    # Extrair nome do relator com regex
+                    import re
+                    relator_match = re.search(r'senador[a]?\s+([^,\.]+)', texto, re.IGNORECASE)
+                    if relator_match:
+                        relator_nome = relator_match.group(1).strip()
+                        if relator_nome and relator_nome not in relatores_set:
+                            relatores_set.add(relator_nome)
+                            additional_details["relatores"].append({
+                                "nome": relator_nome,
+                                "data_designacao": evento.get('Data', ''),
+                                "comissao": evento.get('Local', '')
+                            })
+        except Exception as e:
+            logger.error(f"Erro ao analisar relatores: {str(e)}")
+        
+        # Coletar comissões designadas
+        try:
+            comissoes = self.get_pl_committees(codigo_materia)
+            additional_details["comissoes_designadas"] = comissoes
+        except Exception as e:
+            logger.error(f"Erro ao obter comissões designadas: {str(e)}")
+        
+        # Buscar PLs relacionados por tema
+        try:
+            # Extrair palavras-chave do PL
+            keywords = basic_details.get('Palavras-chave', '').split(',')
+            keywords = [k.strip() for k in keywords if k.strip()]
+            
+            if keywords:
+                related_pls = self.search_pls(keywords=keywords[:3], limit=5)  # Limitar a 3 palavras-chave e 5 resultados
+                # Filtrar para excluir o próprio PL
+                related_pls = [pl for pl in related_pls if pl.get('ID') != pl_id]
+                additional_details["projetos_relacionados"] = related_pls[:3]  # Limitar a 3 projetos relacionados
+        except Exception as e:
+            logger.error(f"Erro ao buscar PLs relacionados: {str(e)}")
+        
+        # Mesclar com detalhes básicos
+        basic_details["detalhes_adicionais"] = additional_details
+        
+        return basic_details
     
     def get_pl_tramitacao(self, sigla: str, numero: str, ano: str) -> List[Dict]:
         """
@@ -395,6 +505,52 @@ class SenadoAPI:
             except Exception as e:
                 logger.error(f"Erro ao processar tramitação do PL {sigla} {numero}/{ano}: {str(e)}")
                 # Retornar lista vazia em caso de erro
+                return []
+        else:
+            # Se veio do cache, retorna diretamente
+            return data
+    
+    def get_pl_committees(self, codigo_materia: str) -> List[Dict]:
+        """
+        Obtém informações sobre as comissões para as quais o PL foi distribuído.
+        
+        Args:
+            codigo_materia: Código da matéria na API do Senado
+                
+        Returns:
+            Lista de comissões
+        """
+        logger.info(f"Buscando comissões para matéria {codigo_materia}")
+        
+        # Endpoint para distribuição em comissões
+        endpoint = f"materia/distribuicao/{codigo_materia}"
+        
+        # Fazer requisição
+        data, from_cache = self._make_request(endpoint)
+        
+        # Processar resposta
+        if not from_cache:
+            try:
+                distribuicao = data.get('DistribuicaoMateria', {}).get('Materia', {}).get('Distribuicao', [])
+                
+                # Garantir que seja uma lista
+                if not isinstance(distribuicao, list):
+                    distribuicao = [distribuicao]
+                
+                # Extrair dados relevantes
+                committees = []
+                for item in distribuicao:
+                    committees.append({
+                        "ComissaoSigla": item.get('LocalDistribuicao', {}).get('SiglaLocal', ''),
+                        "ComissaoNome": item.get('LocalDistribuicao', {}).get('NomeLocal', ''),
+                        "DataDistribuicao": item.get('DataDistribuicao', ''),
+                        "IndicadorDespacho": item.get('IndicadorDespacho', ''),
+                        "IndicadorRelator": item.get('IndicadorRelator', '')
+                    })
+                
+                return committees
+            except Exception as e:
+                logger.error(f"Erro ao processar comissões da matéria {codigo_materia}: {str(e)}")
                 return []
         else:
             # Se veio do cache, retorna diretamente
@@ -648,71 +804,3 @@ class SenadoAPI:
             URL para acessar o PL
         """
         return f"https://www25.senado.leg.br/web/atividade/materias/-/materia/{numero}{ano}"
-
-
-# Exemplo de uso
-if __name__ == "__main__":
-    import sys
-    
-    api = SenadoAPI()
-    
-    # Se for fornecido um PL específico
-    if len(sys.argv) == 4:
-        sigla = sys.argv[1]
-        numero = sys.argv[2]
-        ano = sys.argv[3]
-        
-        print(f"Buscando detalhes do {sigla} {numero}/{ano}...")
-        pl_details = api.get_pl_details(sigla, numero, ano)
-        
-        # Exibir detalhes
-        if pl_details:
-            print("\nDetalhes do PL:")
-            print(f"Título: {pl_details.get('Título', 'N/A')}")
-            print(f"Data: {pl_details.get('Data', 'N/A')}")
-            print(f"Autor: {pl_details.get('Autor', 'N/A')}")
-            print(f"Status: {pl_details.get('Status', 'N/A')}")
-            print(f"URL: {pl_details.get('URL', 'N/A')}")
-            
-            # Situação atual
-            situacao = pl_details.get('Situacao', {})
-            print("\nSituação Atual:")
-            print(f"Local: {situacao.get('Local', 'N/A')}")
-            print(f"Situação: {situacao.get('Situacao', 'N/A')}")
-            print(f"Data: {situacao.get('Data', 'N/A')}")
-            
-            # Tramitação detalhada
-            tramitacao = pl_details.get('Tramitacao_Detalhada', [])
-            if tramitacao:
-                print("\nÚltimos eventos da tramitação:")
-                for i, evento in enumerate(tramitacao[:5], 1):
-                    print(f"{i}. {evento.get('Data', 'N/A')} - {evento.get('Situacao', 'N/A')} ({evento.get('Local', 'N/A')})")
-                    if evento.get('Texto', ''):
-                        print(f"   {evento.get('Texto', '')}")
-        else:
-            print(f"PL {sigla} {numero}/{ano} não encontrado!")
-    
-    else:
-        # Buscar PLs recentes
-        print("Buscando PLs recentes...")
-        recent_pls = api.get_recent_pls(limit=5)
-        
-        if recent_pls:
-            print("\nPLs recentes:")
-            for i, pl in enumerate(recent_pls, 1):
-                print(f"{i}. {pl.get('ID', 'N/A')} - {pl.get('Título', 'N/A')[:100]}...")
-                print(f"   Status: {pl.get('Status', 'N/A')}")
-        else:
-            print("Nenhum PL recente encontrado!")
-        
-        # Buscar PLs por palavra-chave
-        print("\nBuscando PLs relacionados a 'apostas'...")
-        pls_apostas = api.search_pls(keywords=["apostas"], limit=5)
-        
-        if pls_apostas:
-            print("\nPLs relacionados a 'apostas':")
-            for i, pl in enumerate(pls_apostas, 1):
-                print(f"{i}. {pl.get('ID', 'N/A')} - {pl.get('Título', 'N/A')[:100]}...")
-                print(f"   Status: {pl.get('Status', 'N/A')}")
-        else:
-            print("Nenhum PL relacionado a 'apostas' encontrado!")
