@@ -8,6 +8,7 @@ import logging
 import json
 import os
 import xmltodict  # Para processar respostas XML
+import pandas as pd
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Tuple
 
@@ -308,6 +309,43 @@ class SenadoAPI:
         else:
             # Se veio do cache, retorna diretamente
             return data
+    
+    def get_additional_pl_details(self, sigla: str, numero: str, ano: str) -> Dict:
+        """
+        Método que busca detalhes adicionais do PL e consolida com dados básicos.
+        Útil para análise de risco regulatório.
+        
+        Args:
+            sigla: Sigla do PL
+            numero: Número do PL
+            ano: Ano do PL
+            
+        Returns:
+            Dicionário com detalhes enriquecidos do PL
+        """
+        # Buscar detalhes básicos do PL
+        pl_details = self.get_pl_by_id(sigla, numero, ano)
+        
+        if not pl_details:
+            return {}
+        
+        # Adicionar tramitação detalhada se disponível
+        tramitacao = pl_details.get("Tramitacao", [])
+        if tramitacao:
+            # Enriquecer com dados de tramitação específicos para análise
+            pl_details["Tramitacao_Detalhada"] = tramitacao
+        
+        # Buscar projetos relacionados
+        # Em uma versão futura, implementar a busca de projetos relacionados via API
+        projetos_relacionados = []
+        
+        # Adicionar detalhes extra
+        pl_details["detalhes_adicionais"] = {
+            "projetos_relacionados": projetos_relacionados,
+            "autoria_detalhada": []  # Em uma versão futura, enriquecer com mais dados de autoria
+        }
+        
+        return pl_details
     
     def get_pl_tramitacao(self, sigla: str, numero: str, ano: str, codigo_materia: str = None) -> List[Dict]:
         """

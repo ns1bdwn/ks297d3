@@ -109,7 +109,13 @@ class PLRiskAnalyzer:
                     logger.error(f"Erro ao carregar análise do disco para {pl_id}: {str(e)}")
         
         # Buscar dados detalhados do PL usando a API real do Senado
-        pl_details = self.senado_api.get_additional_pl_details(sigla, numero, ano)
+        pl_details = self.senado_api.get_pl_by_id(sigla, numero, ano)
+        
+        # Buscar dados adicionais se necessário
+        if pl_details:
+            # Adicionar tramitação detalhada se não estiver incluída
+            if 'Tramitacao' in pl_details and not pl_details.get('Tramitacao_Detalhada'):
+                pl_details['Tramitacao_Detalhada'] = pl_details['Tramitacao']
         
         if not pl_details:
             logger.warning(f"PL {sigla} {numero}/{ano} não encontrado na API do Senado")
@@ -124,6 +130,12 @@ class PLRiskAnalyzer:
         tramitacao = pl_details.get('Tramitacao_Detalhada', [])
         
         # Realizar análise contextual
+        # Garantir que temos as estruturas necessárias
+        if not situacao:
+            situacao = {}
+        if not tramitacao:
+            tramitacao = []
+            
         contexto_ai = self._analyze_context_with_ai(pl_details, situacao, tramitacao)
         
         # Calcular o risco de aprovação
