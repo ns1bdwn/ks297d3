@@ -13,3 +13,5 @@ logs/                   # Logs da aplicação
 *.log                   # Qualquer arquivo .log
 *.sqlite                # Bancos de dados SQLite
 *.csv
+*.log
+*.json
