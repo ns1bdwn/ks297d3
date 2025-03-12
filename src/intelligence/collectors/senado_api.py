@@ -8,6 +8,7 @@ import logging
 import json
 import os
 import xmltodict  # Para processar respostas XML
+import pandas as pd  # Adicione esta linha
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Tuple
 
@@ -208,106 +209,99 @@ class SenadoAPI:
             return {}, False
     
     def get_pl_by_id(self, sigla: str, numero: str, ano: str) -> Dict:
-        """
-        Obtém detalhes de um PL específico.
+    """
+    Obtém detalhes de um PL específico.
+    
+    Args:
+        sigla: Sigla do PL (ex: PL, PEC)
+        numero: Número do PL
+        ano: Ano do PL
         
-        Args:
-            sigla: Sigla do PL (ex: PL, PEC)
-            numero: Número do PL
-            ano: Ano do PL
-            
-        Returns:
-            Dicionário com detalhes do PL
-        """
-        logger.info(f"Buscando PL {sigla} {numero}/{ano} na API do Senado")
+    Returns:
+        Dicionário com detalhes do PL
+    """
+    logger.info(f"Buscando PL {sigla} {numero}/{ano} na API do Senado")
+    
+    # Endpoint para matéria legislativa
+    endpoint = f"materia/{sigla}/{numero}/{ano}"
+    
+    # Fazer requisição
+    data, from_cache = self._make_request(endpoint)
+    
+    if not data:
+        logger.warning(f"PL {sigla} {numero}/{ano} não encontrado na API do Senado")
+        return {}
+    
+    # Extrair a matéria do objeto DetalheMateria
+    materia = data.get('DetalheMateria', {}).get('Materia', {})
+    if not materia:
+        logger.warning(f"PL {sigla} {numero}/{ano} não encontrado na API do Senado")
+        return {}
+    
+    # Extrair código da matéria (para buscar situação atual)
+    codigo_materia = materia.get('IdentificacaoMateria', {}).get('CodigoMateria')
+    
+    # Extrair dados básicos
+    dados_basicos = materia.get('DadosBasicosMateria', {})
+    
+    # Processando os dados para o formato esperado pelo PLRiskAnalyzer
+    processed_data = {
+        "Título": dados_basicos.get('EmentaMateria', ''),
+        "Data": dados_basicos.get('DataApresentacao', ''),
+        "Autor": dados_basicos.get('Autor', ''),
+        "Status": "Em tramitação",  # Será atualizado com dados da situação atual
+        "URL": self._build_pl_url(sigla, numero, ano, codigo_materia),
+        "Palavras-chave": dados_basicos.get('IndexacaoMateria', ''),
+        "Situacao": {
+            "Local": "",
+            "Situacao": "",
+            "Data": ""
+        },
+        "Tramitacao": []
+    }
+    
+    # Se temos o código da matéria, buscar situação atual (mais confiável)
+    if codigo_materia:
+        situacao_endpoint = f"materia/situacaoatual/{codigo_materia}"
+        situacao_data, situacao_from_cache = self._make_request(situacao_endpoint)
         
-        # Endpoint para matéria legislativa
-        endpoint = f"materia/{sigla}/{numero}/{ano}"
-        
-        # Fazer requisição
-        data, from_cache = self._make_request(endpoint)
-        
-        if not data:
-            logger.warning(f"PL {sigla} {numero}/{ano} não encontrado na API do Senado")
-            return {}
-        
-        # Se não veio do cache, processa os dados brutos
-        if not from_cache:
+        if situacao_data:
             try:
-                # Processar resposta
-                materia = data.get('DetalheMateria', {}).get('Materia', {})
+                situacao = situacao_data.get('SituacaoAtualMateria', {}).get('Materia', {})
                 
-                if not materia:
-                    logger.warning(f"PL {sigla} {numero}/{ano} não encontrado na API do Senado")
-                    return {}
-                
-                # Extrair código da matéria (para buscar situação atual)
-                codigo_materia = materia.get('IdentificacaoMateria', {}).get('CodigoMateria')
-                
-                # Dados básicos
-                processed_data = {
-                    "Título": materia.get('DadosBasicosMateria', {}).get('EmentaMateria', ''),
-                    "Data": materia.get('DadosBasicosMateria', {}).get('DataApresentacao', ''),
-                    "Autor": self._extract_autor(materia),
-                    "Status": "Em tramitação",  # Será atualizado com dados da situação atual
-                    "URL": self._build_pl_url(sigla, numero, ano, codigo_materia),
-                    "Palavras-chave": materia.get('DadosBasicosMateria', {}).get('IndexacaoMateria', ''),
-                    "Situacao": {
-                        "Local": "",
-                        "Situacao": "",
-                        "Data": ""
-                    },
-                    "Tramitacao": []
-                }
-                
-                # Se temos o código da matéria, buscar situação atual (mais confiável)
-                if codigo_materia:
-                    situacao_endpoint = f"materia/situacaoatual/{codigo_materia}"
-                    situacao_data, situacao_from_cache = self._make_request(situacao_endpoint)
+                if situacao:
+                    # Atualizar status e situação
+                    local = situacao.get('Local', {}).get('NomeLocal', '')
+                    situacao_desc = situacao.get('Situacao', {}).get('DescricaoSituacao', '')
+                    data_situacao = situacao.get('Situacao', {}).get('DataSituacao', '')
                     
-                    if situacao_data:
-                        try:
-                            situacao = situacao_data.get('SituacaoAtualMateria', {}).get('Materia', {})
-                            
-                            if situacao:
-                                # Atualizar status e situação
-                                local = situacao.get('Local', {}).get('NomeLocal', '')
-                                situacao_desc = situacao.get('Situacao', {}).get('DescricaoSituacao', '')
-                                data_situacao = situacao.get('Situacao', {}).get('DataSituacao', '')
-                                
-                                # Atualizar com dados mais precisos
-                                if local or situacao_desc:
-                                    processed_data["Status"] = f"{situacao_desc} - {local}" if situacao_desc and local else (situacao_desc or local or "Em tramitação")
-                                
-                                processed_data["Situacao"] = {
-                                    "Local": local,
-                                    "Situacao": situacao_desc,
-                                    "Data": data_situacao
-                                }
-                        except Exception as e:
-                            logger.error(f"Erro ao processar situação atual do PL {sigla} {numero}/{ano}: {str(e)}")
-                
-                # Buscar tramitação detalhada
-                tramitacao_data = self.get_pl_tramitacao(sigla, numero, ano, codigo_materia)
-                if tramitacao_data:
-                    processed_data["Tramitacao"] = tramitacao_data
-                
-                # Adicionar o código da matéria para uso futuro
-                processed_data["CodigoMateria"] = codigo_materia
-                
-                # Buscar relatores
-                if codigo_materia:
-                    relatores = self.get_pl_relatores(codigo_materia)
-                    if relatores:
-                        processed_data["Relatores"] = relatores
-                
-                return processed_data
+                    # Atualizar com dados mais precisos
+                    if local or situacao_desc:
+                        processed_data["Status"] = f"{situacao_desc} - {local}" if situacao_desc and local else (situacao_desc or local or "Em tramitação")
+                    
+                    processed_data["Situacao"] = {
+                        "Local": local,
+                        "Situacao": situacao_desc,
+                        "Data": data_situacao
+                    }
             except Exception as e:
-                logger.error(f"Erro ao processar dados do PL {sigla} {numero}/{ano}: {str(e)}")
-                return {}
-        else:
-            # Se veio do cache, retorna diretamente
-            return data
+                logger.error(f"Erro ao processar situação atual do PL {sigla} {numero}/{ano}: {str(e)}")
+    
+    # Buscar tramitação detalhada
+    tramitacao_data = self.get_pl_tramitacao(sigla, numero, ano, codigo_materia)
+    if tramitacao_data:
+        processed_data["Tramitacao"] = tramitacao_data
+    
+    # Adicionar o código da matéria para uso futuro
+    processed_data["CodigoMateria"] = codigo_materia
+    
+    # Buscar relatores
+    if codigo_materia:
+        relatores = self.get_pl_relatores(codigo_materia)
+        if relatores:
+            processed_data["Relatores"] = relatores
+    
+    return processed_data
             
     def get_additional_pl_details(self, sigla: str, numero: str, ano: str) -> Dict[str, Any]:
         """
@@ -594,8 +588,7 @@ class SenadoAPI:
             DataFrame com os resultados consolidados
         """
         import pandas as pd
-        logger.info(f"Buscando PLs para {len(keywords)} palavras-chave")
-        
+                
         all_results = []
         matched_keywords = {}
         
