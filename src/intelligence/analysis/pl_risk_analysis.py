@@ -7,10 +7,9 @@ import logging
 import json
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Tuple
 import pandas as pd
-import torch
 
 from src.intelligence.collectors.senado_api import SenadoAPI
 
@@ -24,25 +23,26 @@ logger = logging.getLogger("pl_risk_analysis")
 class PLRiskAnalyzer:
     """
     Analisador de risco regulatório para Projetos de Lei.
-    Utiliza dados do status atual e histórico de tramitação para avaliar riscos.
+    Utiliza dados reais da API do Senado para avaliar riscos.
     """
     
     # Comissões com maior poder de aprovação
     HIGH_POWER_COMMITTEES = [
-        "CCJ", "CAE", "Plenário", "Mesa Diretora", 
-        "Comissão Diretora", "Comissão de Constituição e Justiça"
+        "CCJ", "CAE", "PLENÁRIO", "MESA", "COMISSÃO DIRETORA", 
+        "COMISSÃO DE CONSTITUIÇÃO E JUSTIÇA", "COMISSÃO DE ASSUNTOS ECONÔMICOS"
     ]
     
     # Status que indicam avanço no processo legislativo
     ADVANCING_STATUS = [
         "APROVAD", "APROVAÇÃO", "VOTAÇÃO", "DESIGNADO RELATOR", 
-        "INCLUÍDA NA ORDEM DO DIA", "PRONTA PARA A PAUTA", "AUDIÊNCIA PÚBLICA"
+        "INCLUÍDA EM ORDEM DO DIA", "PRONTA PARA A PAUTA", "AUDIÊNCIA PÚBLICA",
+        "PARECER FAVORÁVEL", "URGÊNCIA"
     ]
     
     # Status que indicam estagnação ou arquivamento
     STALLED_STATUS = [
         "ARQUIVAD", "PREJUDICAD", "RETIRAD", "REJEITAD", 
-        "DEVOLVID", "RETIRADO PELO AUTOR"
+        "DEVOLVID", "RETIRADO PELO AUTOR", "PARECER CONTRÁRIO"
     ]
     
     def __init__(self, data_dir: str = None):
@@ -70,7 +70,7 @@ class PLRiskAnalyzer:
     def analyze_pl_risk(self, sigla: str, numero: str, ano: str, 
                        force_refresh: bool = False) -> Dict[str, Any]:
         """
-        Analisa o risco regulatório de um PL com métodos avançados.
+        Analisa o risco regulatório de um PL com base nos dados reais da API do Senado.
         
         Args:
             sigla: Sigla do PL (ex: PL, PEC)
@@ -108,74 +108,22 @@ class PLRiskAnalyzer:
                 except Exception as e:
                     logger.error(f"Erro ao carregar análise do disco para {pl_id}: {str(e)}")
         
-        # Se não há cache válido, simulamos uma análise básica para o MVP
-        # Em uma versão real, usaríamos o SenadoAPI para obter dados reais
-        # Em vez de usar um modelo dummy como faremos aqui para simplificar
+        # Buscar dados detalhados do PL usando a API real do Senado
+        pl_details = self.senado_api.get_additional_pl_details(sigla, numero, ano)
         
-        # Dados simulados do PL para o MVP
-        pl_details = {
-            "Título": f"Projeto de Lei {numero}/{ano} sobre regulação setorial",
-            "Autor": "Senador Exemplo Silva",
-            "Data": "2023-08-15",
-            "Status": "Em tramitação na Comissão de Assuntos Econômicos",
-            "URL": f"https://www25.senado.leg.br/web/atividade/materias/-/materia/{numero}{ano}",
-            "Palavras-chave": "regulação, economia, fintechs, inovação",
-            "Situacao": {
-                "Local": "Comissão de Assuntos Econômicos",
-                "Situacao": "Em análise",
-                "Data": "2023-10-01"
-            },
-            "Tramitacao_Detalhada": [
-                {
-                    "Data": "2023-10-01",
-                    "Local": "Comissão de Assuntos Econômicos",
-                    "Situacao": "Aguardando designação de relator",
-                    "Texto": "Matéria aguardando designação de relator."
-                },
-                {
-                    "Data": "2023-09-15",
-                    "Local": "Comissão de Constituição e Justiça",
-                    "Situacao": "Aprovado",
-                    "Texto": "Matéria aprovada na CCJ com parecer favorável."
-                },
-                {
-                    "Data": "2023-08-15",
-                    "Local": "Mesa Diretora",
-                    "Situacao": "Apresentação",
-                    "Texto": "Apresentação do Projeto de Lei."
-                }
-            ],
-            "detalhes_adicionais": {
-                "autoria_detalhada": [
-                    {
-                        "nome": "Senador Exemplo Silva",
-                        "tipo": "Parlamentar",
-                        "partido": "PXX",
-                        "uf": "XX"
-                    }
-                ],
-                "relatores": [
-                    {
-                        "nome": "Senador Relator Exemplo",
-                        "data_designacao": "2023-09-20",
-                        "comissao": "CCJ"
-                    }
-                ],
-                "projetos_relacionados": [
-                    {
-                        "ID": f"PL 1234/{int(ano)-1}",
-                        "Título": "Projeto relacionado sobre o mesmo tema",
-                        "Status": "Arquivado"
-                    }
-                ]
+        if not pl_details:
+            logger.warning(f"PL {sigla} {numero}/{ano} não encontrado na API do Senado")
+            return {
+                "pl_id": pl_id,
+                "timestamp": datetime.now().timestamp(),
+                "error": "PL não encontrado na API do Senado"
             }
-        }
         
         # Extrair informações relevantes
         situacao = pl_details.get('Situacao', {})
         tramitacao = pl_details.get('Tramitacao_Detalhada', [])
         
-        # Realizar análise contextual com IA
+        # Realizar análise contextual
         contexto_ai = self._analyze_context_with_ai(pl_details, situacao, tramitacao)
         
         # Calcular o risco de aprovação
@@ -234,6 +182,9 @@ class PLRiskAnalyzer:
             "impacto_setorial": contexto_ai["impacto_setorial"]
         }
         
+        # Extrair detalhes de autoria
+        detalhes_autoria = self._extract_autoria_detalhada(pl_details)
+        
         # Montar análise completa aprimorada
         analysis = {
             "pl_id": pl_id,
@@ -258,7 +209,7 @@ class PLRiskAnalyzer:
             "proximos_passos": next_steps,
             "analise_politica": political_trend,
             "ultimos_eventos": tramitacao[:5] if tramitacao else [],
-            "detalhes_autoria": pl_details.get('detalhes_adicionais', {}).get('autoria_detalhada', []),
+            "detalhes_autoria": detalhes_autoria,
             "projetos_relacionados": pl_details.get('detalhes_adicionais', {}).get('projetos_relacionados', [])
         }
         
@@ -275,9 +226,79 @@ class PLRiskAnalyzer:
         
         return analysis
 
+    def _extract_autoria_detalhada(self, pl_details: Dict) -> List[Dict]:
+        """
+        Extrai detalhes de autoria do PL.
+        
+        Args:
+            pl_details: Detalhes do PL
+            
+        Returns:
+            Lista com informações dos autores
+        """
+        autores = []
+        
+        # Extrair da estrutura detalhes_adicionais, se disponível
+        autoria_detalhada = pl_details.get('detalhes_adicionais', {}).get('autoria_detalhada', [])
+        if autoria_detalhada:
+            return autoria_detalhada
+        
+        # Extrair do campo Autor principal como fallback
+        autor_principal = pl_details.get('Autor', '')
+        if autor_principal:
+            # Tentar extrair partido/UF do nome do autor
+            partido_uf_match = re.search(r'\((.*?)\)', autor_principal)
+            if partido_uf_match:
+                partido_uf = partido_uf_match.group(1)
+                
+                # Tentar separar partido e UF
+                if '/' in partido_uf:
+                    partido, uf = partido_uf.split('/')
+                else:
+                    partido, uf = partido_uf, ""
+                
+                # Limpar nome do autor (remover partido/UF)
+                nome = autor_principal.replace(f"({partido_uf})", "").strip()
+            else:
+                nome = autor_principal
+                partido, uf = "", ""
+            
+            # Determinar tipo de autor
+            if "Senador" in nome or "Senadora" in nome:
+                tipo = "Parlamentar"
+            elif "Executivo" in nome or "Presidente" in nome:
+                tipo = "Poder Executivo"
+            elif "Comissão" in nome:
+                tipo = "Comissão"
+            else:
+                tipo = "Outro"
+            
+            autores.append({
+                "nome": nome,
+                "tipo": tipo,
+                "partido": partido,
+                "uf": uf
+            })
+        
+        # Extrair de Relatores se disponível
+        relatores = pl_details.get('Relatores', [])
+        for relator in relatores:
+            # Verificar se o relator já está na lista
+            nome_relator = relator.get('Nome', '')
+            if nome_relator and not any(a['nome'] == nome_relator for a in autores):
+                autores.append({
+                    "nome": nome_relator,
+                    "tipo": "Relator",
+                    "partido": relator.get('Partido', ''),
+                    "uf": relator.get('UF', ''),
+                    "comissao": relator.get('Comissao', '')
+                })
+        
+        return autores
+
     def _analyze_context_with_ai(self, pl_details, situacao, tramitacao):
         """
-        Utiliza modelos de IA para análise contextual avançada do PL.
+        Utiliza análise baseada em regras para análise contextual do PL.
         
         Args:
             pl_details: Detalhes do PL
@@ -293,7 +314,8 @@ class PLRiskAnalyzer:
             
             # Preparar o texto para análise
             titulo = pl_details.get('Título', '')
-            status_atual = situacao.get('Situacao', '')
+            keywords = pl_details.get('Palavras-chave', '')
+            status_atual = situacao.get('Situacao', '') + " " + situacao.get('Local', '')
             
             # Concatenar eventos de tramitação recentes
             eventos_texto = ""
@@ -306,7 +328,7 @@ class PLRiskAnalyzer:
                 eventos_texto += f"{data} - {local} - {situacao_evt}: {texto}\n"
             
             # Texto completo para análise
-            texto_completo = f"Título: {titulo}\nStatus Atual: {status_atual}\nTramitação Recente:\n{eventos_texto}"
+            texto_completo = f"Título: {titulo}\nPalavras-chave: {keywords}\nStatus Atual: {status_atual}\nTramitação Recente:\n{eventos_texto}"
             
             # Análise de urgência e prioridade
             urgencia_keywords = ["urgência", "prioridade", "relevante", "imediato", "emergencial"]
@@ -314,6 +336,17 @@ class PLRiskAnalyzer:
             
             urgencia_score = sum(1 for kw in urgencia_keywords if kw in texto_completo.lower())
             controversia_score = sum(1 for kw in controversia_keywords if kw in texto_completo.lower())
+            
+            # Identificar se há relatores (aumenta urgência)
+            if 'Relatores' in pl_details and pl_details['Relatores']:
+                urgencia_score += 1
+            
+            # Verificar se está em comissão de alto poder (aumenta urgência)
+            local_atual = situacao.get('Local', '').upper()
+            for committee in self.HIGH_POWER_COMMITTEES:
+                if committee in local_atual:
+                    urgencia_score += 1
+                    break
             
             # Resultado da análise contextual
             return {
@@ -323,7 +356,7 @@ class PLRiskAnalyzer:
                 "impacto_setorial": self._analise_impacto_setorial(pl_details)
             }
         except Exception as e:
-            logger.error(f"Erro na análise contextual com IA: {str(e)}")
+            logger.error(f"Erro na análise contextual: {str(e)}")
             return {
                 "urgencia": "Média",
                 "controversia": "Média",
@@ -334,27 +367,78 @@ class PLRiskAnalyzer:
     def _analise_contexto_politico(self, pl_details):
         """Analisa o contexto político do PL com base nos autores e timing"""
         try:
-            autores = pl_details.get('detalhes_adicionais', {}).get('autoria_detalhada', [])
+            autor = pl_details.get('Autor', '')
             
-            if not autores:
-                return "Contexto político não disponível devido à falta de informações sobre autoria."
-                
-            autor_principal = autores[0]
-            autor_tipo = autor_principal.get('tipo', '')
-            autor_partido = autor_principal.get('partido', '')
+            # Verificar se há relatores
+            tem_relator = 'Relatores' in pl_details and len(pl_details['Relatores']) > 0
             
-            # Análise básica de contexto político
-            if autor_tipo == "Poder Executivo":
-                return "PL de iniciativa do Executivo, geralmente com alta prioridade e maior probabilidade de aprovação."
-            elif "Mesa" in autor_tipo or "Comissão" in autor_tipo:
-                return "PL institucional, com tramitação potencialmente mais rápida devido ao apoio dos órgãos diretivos."
-            elif autor_partido:
-                return f"PL de parlamentar do partido {autor_partido}. A dinâmica de aprovação dependerá do alinhamento com a base governista."
+            # Extrair informações básicas de contexto
+            contexto = ""
+            
+            # Verificar tipo de autor
+            if "Executivo" in autor or "Presidente" in autor or "Ministério" in autor:
+                contexto += "PL de iniciativa do Poder Executivo, geralmente com alta prioridade e maior probabilidade de aprovação. "
+            elif "Comissão" in autor or "Mesa Diretora" in autor:
+                contexto += "PL institucional, com tramitação potencialmente mais rápida devido ao apoio dos órgãos diretivos. "
+            elif "Senador" in autor or "Senadora" in autor:
+                # Tentar extrair o partido
+                partido_match = re.search(r'\((.*?)/.*?\)', autor)
+                if partido_match:
+                    partido = partido_match.group(1)
+                    contexto += f"PL de autoria parlamentar do partido {partido}. "
+                else:
+                    contexto += "PL de autoria parlamentar. "
+            
+            # Analisar relatores
+            if tem_relator:
+                relatores = pl_details['Relatores']
+                if len(relatores) == 1:
+                    relator = relatores[0]
+                    contexto += f"Possui relator designado: {relator.get('Nome', '')} ({relator.get('Partido', '')}/{relator.get('UF', '')}) na comissão {relator.get('Comissao', '')}. "
+                else:
+                    contexto += f"Possui {len(relatores)} relatores designados em diferentes comissões, o que indica tramitação ativa. "
             else:
-                return "Contexto político indefinido devido à limitação de informações sobre a autoria."
+                contexto += "Não possui relator designado, o que pode indicar estágio inicial de tramitação. "
+            
+            # Analisar situação atual
+            situacao = pl_details.get('Situacao', {})
+            local_atual = situacao.get('Local', '')
+            status_atual = situacao.get('Situacao', '')
+            
+            if local_atual:
+                if any(committee.upper() in local_atual.upper() for committee in self.HIGH_POWER_COMMITTEES):
+                    contexto += f"Encontra-se em {local_atual}, que é uma instância decisória de alta influência no processo legislativo. "
+                else:
+                    contexto += f"Encontra-se em {local_atual}. "
+            
+            if status_atual:
+                contexto += f"Status atual: {status_atual}. "
+            
+            # Analisar tempo de tramitação
+            data_apresentacao = pl_details.get('Data', '')
+            if data_apresentacao:
+                try:
+                    data_inicial = datetime.strptime(data_apresentacao, "%Y-%m-%d")
+                    tempo_tramitacao = (datetime.now() - data_inicial).days
+                    
+                    if tempo_tramitacao < 30:
+                        contexto += "Projeto recente com menos de 30 dias de tramitação. "
+                    elif tempo_tramitacao < 180:
+                        contexto += "Projeto em tramitação há menos de 6 meses. "
+                    elif tempo_tramitacao < 365:
+                        contexto += "Projeto em tramitação há menos de 1 ano. "
+                    else:
+                        contexto += f"Projeto em tramitação há mais de {tempo_tramitacao // 365} anos, indicando possíveis obstáculos políticos ou baixa prioridade. "
+                except Exception:
+                    pass
+            
+            if not contexto:
+                contexto = "Contexto político não disponível devido à limitação de informações."
+                
+            return contexto
         except Exception as e:
             logger.error(f"Erro na análise de contexto político: {str(e)}")
-            return "Não foi possível determinar o contexto político."
+            return "Não foi possível determinar o contexto político devido a erro na análise."
 
     def _analise_impacto_setorial(self, pl_details):
         """Análise do impacto setorial com base em palavras-chave e tema"""
@@ -363,34 +447,100 @@ class PLRiskAnalyzer:
             keywords = pl_details.get('Palavras-chave', '').split(',')
             keywords = [k.strip().lower() for k in keywords if k.strip()]
             
+            texto_completo = titulo.lower() + " " + " ".join(keywords)
+            
             # Setores de interesse
             setores = {
-                "igaming": ["apostas", "jogo", "bets", "cassino", "loteria", "quota fixa"],
-                "meios_pagamento": ["pagamento", "pix", "cartão", "banco", "financeiro", "transferência"],
-                "digital_assets": ["cripto", "bitcoin", "blockchain", "token", "digital", "ativo"]
+                "igaming": ["apostas", "jogo", "bet", "cassino", "loteria", "quota fixa", "gaming"],
+                "meios_pagamento": ["pagamento", "pix", "cartão", "banco", "financeiro", "transferência", "payment"],
+                "digital_assets": ["cripto", "bitcoin", "blockchain", "token", "digital", "ativo", "nft", "stablecoin", "moeda virtual"]
             }
             
             # Identificar setores afetados
             setores_afetados = []
             for setor, termos in setores.items():
-                if any(termo in titulo.lower() for termo in termos) or any(termo in kw for kw in keywords for termo in termos):
+                if any(termo in texto_completo for termo in termos):
                     setores_afetados.append(setor)
+            
+            if not setores_afetados:
+                # Tentar identificar por setor mais amplo
+                setores_amplos = {
+                    "tributário": ["tributo", "imposto", "taxa", "contribuição", "fiscal"],
+                    "regulatório": ["regulação", "marco regulatório", "lei", "norma", "regra"],
+                    "tecnológico": ["tecnologia", "internet", "digital", "online", "eletrônico"],
+                    "financeiro": ["financeiro", "bancário", "crédito", "investimento", "finança"]
+                }
+                
+                for setor, termos in setores_amplos.items():
+                    if any(termo in texto_completo for termo in termos):
+                        setores_afetados.append(setor)
             
             if not setores_afetados:
                 return "Impacto setorial não identificado automaticamente. Recomenda-se análise manual."
                 
             # Personalizar mensagem por setor
             if "igaming" in setores_afetados:
-                return "PL com potencial impacto direto no setor de iGaming. Recomenda-se atenção especial às disposições sobre licenciamento e regras operacionais."
+                return """
+                PL com potencial impacto direto no setor de iGaming. Recomenda-se atenção especial às disposições sobre:
+                
+                • Licenciamento e requisitos operacionais
+                • Tributação específica do setor
+                • Mecanismos de jogo responsável e prevenção à ludopatia
+                • Requisitos de KYC e prevenção à lavagem de dinheiro
+                • Restrições de publicidade e marketing
+                
+                Este projeto pode alterar significativamente o ambiente regulatório do setor, requerendo possíveis adaptações em processos, sistemas e políticas internas.
+                """
             elif "meios_pagamento" in setores_afetados:
-                return "PL afeta o setor de meios de pagamento. Possível impacto em operações financeiras e requisitos de compliance."
+                return """
+                PL com impacto no setor de meios de pagamento. Áreas críticas a monitorar:
+                
+                • Regulação de taxas e tarifas
+                • Requisitos de interoperabilidade
+                • Novas exigências de transparência
+                • Proteção de dados de transações
+                • Alterações em prazos de liquidação
+                
+                Empresas do setor podem precisar adaptar infraestrutura tecnológica e processos operacionais para atender a novos requisitos regulatórios.
+                """
             elif "digital_assets" in setores_afetados:
-                return "PL relacionado a ativos digitais. Potencial impacto em operações com criptomoedas e regulação do setor."
+                return """
+                PL relacionado a ativos digitais. Pontos de atenção:
+                
+                • Definição legal de criptoativos
+                • Requisitos de registro e licenciamento
+                • Tratamento tributário de operações
+                • Regras de KYC/AML para exchanges
+                • Regulação sobre custódia e administração de ativos
+                
+                O projeto pode estabelecer novas obrigações para operadores do mercado e impactar a oferta de serviços relacionados a criptoativos no Brasil.
+                """
+            elif "tributário" in setores_afetados:
+                return """
+                PL com impacto tributário. Principais aspectos a considerar:
+                
+                • Possíveis alterações em alíquotas ou base de cálculo
+                • Novas obrigações acessórias
+                • Mudanças em regimes especiais
+                • Impactos em planejamento fiscal
+                
+                Recomenda-se análise detalhada para quantificar impactos financeiros e adequar processos fiscais.
+                """
             else:
-                return f"PL com impacto nos setores: {', '.join(setores_afetados)}. Recomenda-se análise detalhada."
+                return f"""
+                PL com possível impacto nos setores: {', '.join(setores_afetados)}. 
+                
+                Recomenda-se análise detalhada do texto para identificar:
+                • Novos requisitos regulatórios
+                • Mudanças em processos operacionais
+                • Impactos em compliance
+                • Necessidades de adaptação tecnológica
+                
+                Uma avaliação específica permitirá quantificar custos e esforços de adaptação necessários.
+                """
         except Exception as e:
             logger.error(f"Erro na análise de impacto setorial: {str(e)}")
-            return "Não foi possível determinar o impacto setorial."
+            return "Não foi possível determinar o impacto setorial devido a erro na análise."
     
     def _calculate_approval_risk(self, pl_details: Dict, 
                                situacao: Dict, 
@@ -417,7 +567,7 @@ class PLRiskAnalyzer:
         # Verificar se está em comissão de alto poder
         in_powerful_committee = False
         for committee in self.HIGH_POWER_COMMITTEES:
-            if committee.upper() in current_location:
+            if committee in current_location:
                 in_powerful_committee = True
                 risk_score += 10
                 risk_factors.append({
@@ -440,7 +590,7 @@ class PLRiskAnalyzer:
         # Verificar status de avanço
         advancing = False
         for status in self.ADVANCING_STATUS:
-            if status.upper() in current_status:
+            if status in current_status:
                 advancing = True
                 risk_score += 15
                 risk_factors.append({
@@ -454,7 +604,7 @@ class PLRiskAnalyzer:
         # Verificar status de estagnação
         stalled = False
         for status in self.STALLED_STATUS:
-            if status.upper() in current_status:
+            if status in current_status:
                 stalled = True
                 risk_score -= 40
                 risk_factors.append({
@@ -577,25 +727,32 @@ class PLRiskAnalyzer:
             except Exception:
                 pass
         
-        # Fator 5: Relevância do autor
+        # Fator 5: Verificar se tem relatores designados
+        tem_relator = 'Relatores' in pl_details and len(pl_details['Relatores']) > 0
+        if tem_relator:
+            risk_score += 10
+            risk_factors.append({
+                "fator": "Designação de relatores",
+                "descricao": f"{len(pl_details['Relatores'])} relator(es) designado(s)",
+                "impacto": "+10 pontos",
+                "explicacao": "PLs com relatores designados têm maior chance de avançar no processo legislativo"
+            })
+        else:
+            risk_score -= 5
+            risk_factors.append({
+                "fator": "Ausência de relatores",
+                "descricao": "Nenhum relator designado",
+                "impacto": "-5 pontos",
+                "explicacao": "A ausência de relatores pode indicar menor prioridade ou estágio inicial de tramitação"
+            })
+        
+        # Fator 6: Relevância do autor
         autor = pl_details.get('Autor', '')
         
-        # Verificar influência com base nos detalhes adicionais
-        autores = pl_details.get('detalhes_adicionais', {}).get('autoria_detalhada', [])
+        # Verificar tipo de autor
         autor_influente = False
-        
-        if autores:
-            autor_tipo = autores[0].get('tipo', '')
-            if autor_tipo in ["Poder Executivo", "Mesa Diretora", "Comissão"]:
-                autor_influente = True
-                risk_score += 15
-                risk_factors.append({
-                    "fator": "Relevância do autor",
-                    "descricao": f"Autor: {autor} ({autor_tipo})",
-                    "impacto": "+15 pontos",
-                    "explicacao": f"PLs de {autor_tipo} têm maior prioridade e chance de aprovação"
-                })
-        elif "Poder Executivo" in autor or "Presidente" in autor:
+        if "Poder Executivo" in autor or "Presidente" in autor or "Ministério" in autor:
+            autor_influente = True
             risk_score += 15
             risk_factors.append({
                 "fator": "Relevância do autor",
@@ -604,6 +761,7 @@ class PLRiskAnalyzer:
                 "explicacao": "PLs do Poder Executivo têm maior prioridade e chance de aprovação"
             })
         elif "Mesa Diretora" in autor or "Comissão" in autor:
+            autor_influente = True
             risk_score += 10
             risk_factors.append({
                 "fator": "Relevância do autor",
@@ -637,7 +795,7 @@ class PLRiskAnalyzer:
         # Verificar se está arquivado ou prejudicado
         current_status = situacao.get('Situacao', '').upper()
         for status in self.STALLED_STATUS:
-            if status.upper() in current_status:
+            if status in current_status:
                 time_factors.append({
                     "fator": "Status atual",
                     "descricao": f"Status: {situacao.get('Situacao', '')}",
@@ -648,6 +806,8 @@ class PLRiskAnalyzer:
         
         # Estimativa baseada na localização atual
         current_location = situacao.get('Local', '').upper()
+        
+        # Verificar se está em plenário
         if "PLENÁRIO" in current_location:
             estimate = "3-6 meses"
             time_factors.append({
@@ -656,6 +816,7 @@ class PLRiskAnalyzer:
                 "impacto": "3-6 meses",
                 "explicacao": "PLs em Plenário geralmente têm tramitação mais rápida se houver prioridade"
             })
+        # Verificar se está na CCJ
         elif "CCJ" in current_location or "CONSTITUIÇÃO E JUSTIÇA" in current_location:
             estimate = "6-12 meses"
             time_factors.append({
@@ -664,6 +825,7 @@ class PLRiskAnalyzer:
                 "impacto": "6-12 meses",
                 "explicacao": "A CCJ é uma comissão crucial e pode demandar análise detalhada"
             })
+        # Verificar se está em comissão de alto poder
         elif any(committee in current_location for committee in self.HIGH_POWER_COMMITTEES):
             estimate = "6-18 meses"
             time_factors.append({
@@ -751,6 +913,27 @@ class PLRiskAnalyzer:
             except Exception as e:
                 logger.warning(f"Erro ao calcular velocidade de tramitação: {str(e)}")
         
+        # Verificar se tem relatores (acelera o processo)
+        tem_relator = 'Relatores' in pl_details and len(pl_details['Relatores']) > 0
+        if tem_relator:
+            time_factors.append({
+                "fator": "Presença de relatores",
+                "descricao": f"{len(pl_details['Relatores'])} relator(es) designado(s)",
+                "impacto": "Redução no tempo estimado",
+                "explicacao": "A designação de relatores acelera o processo legislativo"
+            })
+            
+            # Reduzir o tempo estimado
+            if "-" in estimate:
+                parts = estimate.split("-")
+                if len(parts) == 2:
+                    try:
+                        min_months = max(1, int(parts[0]) - 2)
+                        max_months = max(min_months + 2, int(parts[1].replace(" meses", "")) - 2)
+                        estimate = f"{min_months}-{max_months} meses"
+                    except ValueError:
+                        pass
+        
         # Última movimentação
         if tramitacao and tramitacao[0].get('Data'):
             try:
@@ -767,13 +950,13 @@ class PLRiskAnalyzer:
                     
                     # Se estiver parado há muito tempo, a estimativa pode ficar mais longa
                     if days_since_last_event > 180:
-                        if not "+" in estimate:
+                        if "-" in estimate:
                             parts = estimate.split("-")
                             if len(parts) == 2:
                                 try:
-                                    min_months = int(parts[0])
-                                    max_months = int(parts[1].replace(" meses", ""))
-                                    estimate = f"{min_months+6}-{max_months+12} meses"
+                                    min_months = int(parts[0]) + 6
+                                    max_months = int(parts[1].replace(" meses", "")) + 12
+                                    estimate = f"{min_months}-{max_months} meses"
                                 except ValueError:
                                     pass
             except Exception:
@@ -783,7 +966,7 @@ class PLRiskAnalyzer:
     
     def _predict_next_steps(self, pl_details: Dict, situacao: Dict, tramitacao: List[Dict]) -> List[Dict]:
         """
-        Prediz os próximos passos prováveis na tramitação de um PL com análise de influência e histórico.
+        Prediz os próximos passos prováveis na tramitação de um PL.
         
         Args:
             pl_details: Detalhes do PL
@@ -798,7 +981,7 @@ class PLRiskAnalyzer:
         # Verificar se está arquivado ou prejudicado
         current_status = situacao.get('Situacao', '').upper()
         for status in self.STALLED_STATUS:
-            if status.upper() in current_status:
+            if status in current_status:
                 return [{
                     "passo": "PL não está em tramitação ativa",
                     "probabilidade": "Alta",
@@ -808,6 +991,13 @@ class PLRiskAnalyzer:
         
         # Localização atual
         current_location = situacao.get('Local', '')
+        
+        # Verificar se tem relatores designados
+        tem_relator = 'Relatores' in pl_details and len(pl_details['Relatores']) > 0
+        relator_nome = ""
+        if tem_relator and pl_details['Relatores']:
+            relator = pl_details['Relatores'][0]
+            relator_nome = relator.get('Nome', '')
         
         # Analisar padrões históricos na tramitação
         tramitacao_dias = []
@@ -855,65 +1045,31 @@ class PLRiskAnalyzer:
         # Calcular tempo médio de tramitação entre etapas
         tempo_medio = sum(tramitacao_dias) / len(tramitacao_dias) if tramitacao_dias else 30  # Padrão de 30 dias
         
-        # Verificar se há relatores designados
-        tem_relator = False
-        relator_nome = ""
-        detalhes_adicionais = pl_details.get('detalhes_adicionais', {})
-        relatores = detalhes_adicionais.get('relatores', [])
-        
-        if relatores:
-            tem_relator = True
-            relator_nome = relatores[0].get('nome', '')
-        
         # Verificar se o autor tem influência
-        autor_influente = False
-        autor_info = ""
-        autores = detalhes_adicionais.get('autoria_detalhada', [])
+        autor = pl_details.get('Autor', '')
+        autor_influente = "Poder Executivo" in autor or "Presidente" in autor or "Mesa Diretora" in autor or "Comissão" in autor
         
-        if autores:
-            autor = autores[0]
-            autor_tipo = autor.get('tipo', '')
-            autor_nome = autor.get('nome', '')
-            autor_partido = autor.get('partido', '')
-            autor_uf = autor.get('uf', '')
-            
-            # Considerar autor influente se for liderança ou executivo
-            if autor_tipo in ["Poder Executivo", "Mesa Diretora", "Liderança"]:
-                autor_influente = True
-                
-            autor_info = f"{autor_nome} ({autor_partido}/{autor_uf})" if autor_partido and autor_uf else autor_nome
-        
-        # Obter projetos relacionados
-        projetos_relacionados = detalhes_adicionais.get('projetos_relacionados', [])
-        contexto_relacionados = ""
-        
-        if projetos_relacionados:
-            pl_relacionado = projetos_relacionados[0]
-            contexto_relacionados = f"Existe tema similar no PL {pl_relacionado.get('ID', '')}, atualmente em {pl_relacionado.get('Status', '')}"
-        
-        # Predizer próximos passos com base na localização atual e contexto aprimorado
+        # Predizer próximos passos com base na localização atual e contexto
         if "Plenário" in current_location:
             # Análise para PLs em Plenário
             urgencia = any('urgência' in evt.get('tipo', '') for evt in eventos_relevantes)
-            apoio_lideranca = autor_influente or 'Mesa Diretora' in current_location
             
             next_steps.append({
                 "passo": "Votação em Plenário",
-                "probabilidade": "Alta" if urgencia or apoio_lideranca else "Média",
+                "probabilidade": "Alta" if urgencia or autor_influente else "Média",
                 "observacao": "PL já está no Plenário, próximo passo natural é a votação",
                 "contexto": f"{'Em regime de urgência, o que acelera a votação. ' if urgencia else ''}"
                           f"{'Autor tem influência política significativa, aumentando chances de priorização. ' if autor_influente else ''}"
                           f"Tempo estimado: {max(7, int(tempo_medio/2))} dias."
             })
             
-            prob_aprovacao = "Alta" if urgencia and apoio_lideranca else "Média" if urgencia or apoio_lideranca else "Baixa"
+            prob_aprovacao = "Alta" if urgencia and autor_influente else "Média" if urgencia or autor_influente else "Baixa"
             next_steps.append({
                 "passo": "Aprovação no Plenário",
                 "probabilidade": prob_aprovacao,
                 "observacao": "Votação para aprovação do PL no plenário",
                 "contexto": f"{'Projetos em urgência têm maior taxa de aprovação. ' if urgencia else ''}"
                           f"{'A autoria/apoio político aumenta chances de aprovação. ' if autor_influente else ''}"
-                          f"{contexto_relacionados if contexto_relacionados else ''}"
             })
             
             next_steps.append({
@@ -925,12 +1081,10 @@ class PLRiskAnalyzer:
         
         elif "CCJ" in current_location or "Constituição e Justiça" in current_location:
             # Análise para PLs na CCJ
-            prazo_relator = "Já designado" if tem_relator else "Pendente"
-            
             next_steps.append({
                 "passo": "Designação de Relator" if not tem_relator else "Emissão de Parecer pelo Relator",
                 "probabilidade": "Alta",
-                "observacao": f"Relator: {prazo_relator}",
+                "observacao": f"Relator: {'Já designado - ' + relator_nome if tem_relator else 'Pendente'}",
                 "contexto": f"{'Relator já designado: ' + relator_nome + '. ' if tem_relator else 'Aguardando designação de relator. '}"
                           f"Na CCJ, o tempo médio para emissão de parecer é de aproximadamente {int(tempo_medio*1.2)} dias."
             })
@@ -958,12 +1112,10 @@ class PLRiskAnalyzer:
         
         elif "Comissão" in current_location:
             # Análise para PLs em outras comissões
-            prazo_relator = "Já designado" if tem_relator else "Pendente"
-            
             next_steps.append({
                 "passo": "Designação de Relator" if not tem_relator else "Emissão de Parecer pelo Relator",
                 "probabilidade": "Alta",
-                "observacao": f"Relator: {prazo_relator}",
+                "observacao": f"Relator: {'Já designado - ' + relator_nome if tem_relator else 'Pendente'}",
                 "contexto": f"{'Relator já designado: ' + relator_nome + '. ' if tem_relator else 'Aguardando designação de relator. '}"
                           f"O tempo médio para emissão de parecer nesta comissão é de aproximadamente {int(tempo_medio)} dias."
             })
@@ -1008,15 +1160,6 @@ class PLRiskAnalyzer:
                               f"O tempo médio para inclusão na pauta após designação de relator é de aproximadamente 45 dias."
                 }
             ]
-        
-        # Adicionar informação sobre agrupamento com outros PLs, se aplicável
-        if projetos_relacionados and not any("agrupamento" in step["passo"].lower() for step in next_steps):
-            next_steps.append({
-                "passo": "Possível agrupamento com PLs similares",
-                "probabilidade": "Média",
-                "observacao": f"PL pode ser agrupado com outros projetos semelhantes",
-                "contexto": f"Existem {len(projetos_relacionados)} PLs com temática similar em tramitação, como {', '.join([pl.get('ID', '') for pl in projetos_relacionados[:2]])}. O agrupamento pode acelerar ou retardar a tramitação dependendo do estágio dos outros projetos."
-            })
         
         return next_steps
         
@@ -1164,3 +1307,24 @@ class PLRiskAnalyzer:
         critical_events.sort(key=lambda x: (x['risco'], 1 if x['probabilidade'] == 'Alta' else 0), reverse=True)
         
         return critical_events[:5]  # Retornar os 5 mais críticos
+
+# Testes básicos
+if __name__ == "__main__":
+    analyzer = PLRiskAnalyzer()
+    
+    # Analisar um PL específico
+    analysis = analyzer.analyze_pl_risk("PL", "2234", "2022")
+    print(f"Análise de risco do PL 2234/2022:")
+    print(f"Score de risco: {analysis['risco_aprovacao']['score']:.1f}% ({analysis['risco_aprovacao']['nivel']})")
+    print(f"Tempo estimado: {analysis['tempo_estimado']['estimativa']}")
+    print(f"Tendência política: {analysis['analise_politica']['tendencia']}")
+    
+    # Listar principais fatores de risco
+    print("\nPrincipais fatores de risco:")
+    for factor in analysis['risco_aprovacao']['fatores'][:3]:
+        print(f"- {factor['fator']}: {factor['impacto']}")
+    
+    # Listar próximos passos prováveis
+    print("\nPróximos passos prováveis:")
+    for i, step in enumerate(analysis['proximos_passos'][:3]):
+        print(f"{i+1}. {step['passo']} (Probabilidade: {step['probabilidade']})")

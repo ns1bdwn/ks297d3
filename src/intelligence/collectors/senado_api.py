@@ -186,7 +186,6 @@ class SenadoAPI:
                 try:
                     # Verificar se é XML (o formato padrão da API do Senado)
                     if 'xml' in response.headers.get('Content-Type', '').lower():
-                        import xmltodict
                         # Converter XML para dicionário
                         data = xmltodict.parse(response.content)
                     else:
@@ -208,7 +207,7 @@ class SenadoAPI:
             logger.error(f"Erro ao fazer requisição para {endpoint}: {str(e)}")
             return {}, False
     
-    def get_pl_details(self, sigla: str, numero: str, ano: str) -> Dict:
+    def get_pl_by_id(self, sigla: str, numero: str, ano: str) -> Dict:
         """
         Obtém detalhes de um PL específico.
         
@@ -220,13 +219,17 @@ class SenadoAPI:
         Returns:
             Dicionário com detalhes do PL
         """
-        logger.info(f"Buscando detalhes do {sigla} {numero}/{ano} na API do Senado")
+        logger.info(f"Buscando PL {sigla} {numero}/{ano} na API do Senado")
         
         # Endpoint para matéria legislativa
         endpoint = f"materia/{sigla}/{numero}/{ano}"
         
         # Fazer requisição
         data, from_cache = self._make_request(endpoint)
+        
+        if not data:
+            logger.warning(f"PL {sigla} {numero}/{ano} não encontrado na API do Senado")
+            return {}
         
         # Se não veio do cache, processa os dados brutos
         if not from_cache:
@@ -247,7 +250,7 @@ class SenadoAPI:
                     "Data": materia.get('DadosBasicosMateria', {}).get('DataApresentacao', ''),
                     "Autor": self._extract_autor(materia),
                     "Status": "Em tramitação",  # Será atualizado com dados da situação atual
-                    "URL": self._build_pl_url(sigla, numero, ano),
+                    "URL": self._build_pl_url(sigla, numero, ano, codigo_materia),
                     "Palavras-chave": materia.get('DadosBasicosMateria', {}).get('IndexacaoMateria', ''),
                     "Situacao": {
                         "Local": "",
@@ -284,10 +287,19 @@ class SenadoAPI:
                         except Exception as e:
                             logger.error(f"Erro ao processar situação atual do PL {sigla} {numero}/{ano}: {str(e)}")
                 
-                # Buscar tramitação detalhada se disponível
-                tramitacao_data = self.get_pl_tramitacao(sigla, numero, ano)
+                # Buscar tramitação detalhada
+                tramitacao_data = self.get_pl_tramitacao(sigla, numero, ano, codigo_materia)
                 if tramitacao_data:
-                    processed_data["Tramitacao_Detalhada"] = tramitacao_data
+                    processed_data["Tramitacao"] = tramitacao_data
+                
+                # Adicionar o código da matéria para uso futuro
+                processed_data["CodigoMateria"] = codigo_materia
+                
+                # Buscar relatores
+                if codigo_materia:
+                    relatores = self.get_pl_relatores(codigo_materia)
+                    if relatores:
+                        processed_data["Relatores"] = relatores
                 
                 return processed_data
             except Exception as e:
@@ -296,118 +308,8 @@ class SenadoAPI:
         else:
             # Se veio do cache, retorna diretamente
             return data
-
-    def get_additional_pl_details(self, sigla: str, numero: str, ano: str) -> Dict:
-        """
-        Obtém detalhes adicionais de um PL específico para enriquecer a análise de impacto.
-        
-        Args:
-            sigla: Sigla do PL (ex: PL, PEC)
-            numero: Número do PL
-            ano: Ano do PL
-            
-        Returns:
-            Dicionário com detalhes enriquecidos do PL
-        """
-        pl_id = f"{sigla} {numero}/{ano}"
-        logger.info(f"Buscando detalhes estendidos para {pl_id}")
-        
-        # Buscar detalhes básicos primeiro
-        basic_details = self.get_pl_details(sigla, numero, ano)
-        
-        # Extrair o código da matéria para consultas adicionais
-        codigo_materia = None
-        try:
-            # Realizar consulta para obter o código da matéria
-            endpoint = f"materia/{sigla}/{numero}/{ano}"
-            data, _ = self._make_request(endpoint)
-            codigo_materia = data.get('DetalheMateria', {}).get('Materia', {}).get('IdentificacaoMateria', {}).get('CodigoMateria')
-        except Exception as e:
-            logger.error(f"Erro ao obter código da matéria: {str(e)}")
-        
-        if not codigo_materia:
-            return basic_details
-        
-        # Dados adicionais a serem coletados
-        additional_details = {
-            "autoria_detalhada": [],
-            "relatores": [],
-            "comissoes_designadas": [],
-            "tempo_medio_tramitacao": None,
-            "taxa_aprovacao_autor": None,
-            "projetos_relacionados": []
-        }
-        
-        # Obter informações detalhadas sobre autoria
-        try:
-            endpoint_autoria = f"materia/autoria/{codigo_materia}"
-            autoria_data, _ = self._make_request(endpoint_autoria)
-            autores = autoria_data.get('AutoriaMateria', {}).get('Materia', {}).get('Autoria', [])
-            
-            if not isinstance(autores, list):
-                autores = [autores]
-                
-            for autor in autores:
-                autor_info = {
-                    "nome": autor.get('Autor', {}).get('NomeAutor', ''),
-                    "tipo": autor.get('Autor', {}).get('TipoAutor', ''),
-                    "partido": autor.get('Autor', {}).get('IdentificacaoParlamentar', {}).get('SiglaPartidoParlamentar', ''),
-                    "uf": autor.get('Autor', {}).get('IdentificacaoParlamentar', {}).get('UfParlamentar', '')
-                }
-                additional_details["autoria_detalhada"].append(autor_info)
-        except Exception as e:
-            logger.error(f"Erro ao obter detalhes de autoria: {str(e)}")
-        
-        # Obter histórico de relatores
-        try:
-            tramitacao = basic_details.get('Tramitacao_Detalhada', [])
-            relatores_set = set()
-            
-            for evento in tramitacao:
-                texto = evento.get('Texto', '').lower()
-                if 'designad' in texto and 'relator' in texto:
-                    # Extrair nome do relator com regex
-                    import re
-                    relator_match = re.search(r'senador[a]?\s+([^,\.]+)', texto, re.IGNORECASE)
-                    if relator_match:
-                        relator_nome = relator_match.group(1).strip()
-                        if relator_nome and relator_nome not in relatores_set:
-                            relatores_set.add(relator_nome)
-                            additional_details["relatores"].append({
-                                "nome": relator_nome,
-                                "data_designacao": evento.get('Data', ''),
-                                "comissao": evento.get('Local', '')
-                            })
-        except Exception as e:
-            logger.error(f"Erro ao analisar relatores: {str(e)}")
-        
-        # Coletar comissões designadas
-        try:
-            comissoes = self.get_pl_committees(codigo_materia)
-            additional_details["comissoes_designadas"] = comissoes
-        except Exception as e:
-            logger.error(f"Erro ao obter comissões designadas: {str(e)}")
-        
-        # Buscar PLs relacionados por tema
-        try:
-            # Extrair palavras-chave do PL
-            keywords = basic_details.get('Palavras-chave', '').split(',')
-            keywords = [k.strip() for k in keywords if k.strip()]
-            
-            if keywords:
-                related_pls = self.search_pls(keywords=keywords[:3], limit=5)  # Limitar a 3 palavras-chave e 5 resultados
-                # Filtrar para excluir o próprio PL
-                related_pls = [pl for pl in related_pls if pl.get('ID') != pl_id]
-                additional_details["projetos_relacionados"] = related_pls[:3]  # Limitar a 3 projetos relacionados
-        except Exception as e:
-            logger.error(f"Erro ao buscar PLs relacionados: {str(e)}")
-        
-        # Mesclar com detalhes básicos
-        basic_details["detalhes_adicionais"] = additional_details
-        
-        return basic_details
     
-    def get_pl_tramitacao(self, sigla: str, numero: str, ano: str) -> List[Dict]:
+    def get_pl_tramitacao(self, sigla: str, numero: str, ano: str, codigo_materia: str = None) -> List[Dict]:
         """
         Obtém o histórico de tramitação de um PL.
         
@@ -415,26 +317,26 @@ class SenadoAPI:
             sigla: Sigla do PL (ex: PL, PEC)
             numero: Número do PL
             ano: Ano do PL
+            codigo_materia: Código da matéria (opcional)
             
         Returns:
             Lista de eventos da tramitação
         """
         logger.info(f"Buscando tramitação do {sigla} {numero}/{ano} na API do Senado")
         
-        # Primeiro, tentamos obter o código da matéria (mais confiável para buscar movimentações)
-        codigo_materia = None
-        
-        # Endpoint para detalhes da matéria
-        endpoint_detalhe = f"materia/{sigla}/{numero}/{ano}"
-        
-        # Fazer requisição
-        detalhes, from_cache = self._make_request(endpoint_detalhe)
-        
-        if detalhes:
-            try:
-                codigo_materia = detalhes.get('DetalheMateria', {}).get('Materia', {}).get('IdentificacaoMateria', {}).get('CodigoMateria')
-            except Exception as e:
-                logger.error(f"Erro ao extrair código da matéria: {str(e)}")
+        # Se não temos o código da matéria, tentamos obter
+        if not codigo_materia:
+            # Endpoint para detalhes da matéria
+            endpoint_detalhe = f"materia/{sigla}/{numero}/{ano}"
+            
+            # Fazer requisição
+            detalhes, from_cache = self._make_request(endpoint_detalhe)
+            
+            if detalhes:
+                try:
+                    codigo_materia = detalhes.get('DetalheMateria', {}).get('Materia', {}).get('IdentificacaoMateria', {}).get('CodigoMateria')
+                except Exception as e:
+                    logger.error(f"Erro ao extrair código da matéria: {str(e)}")
         
         # Se temos o código da matéria, usamos o endpoint de movimentações (mais confiável)
         if codigo_materia:
@@ -473,7 +375,7 @@ class SenadoAPI:
                 # Se veio do cache, retorna diretamente
                 return data
         
-        # Caso o método acima falhe, tentamos a URL direta de tramitação (método original)
+        # Caso o método acima falhe, tentamos a URL direta de tramitação
         endpoint_tramitacao = f"materia/tramitacao/{sigla}/{numero}/{ano}"
         
         # Fazer requisição
@@ -509,21 +411,21 @@ class SenadoAPI:
         else:
             # Se veio do cache, retorna diretamente
             return data
-    
-    def get_pl_committees(self, codigo_materia: str) -> List[Dict]:
+
+    def get_pl_relatores(self, codigo_materia: str) -> List[Dict]:
         """
-        Obtém informações sobre as comissões para as quais o PL foi distribuído.
+        Obtém os relatores designados para um PL.
         
         Args:
-            codigo_materia: Código da matéria na API do Senado
-                
+            codigo_materia: Código da matéria
+            
         Returns:
-            Lista de comissões
+            Lista de relatores com informações detalhadas
         """
-        logger.info(f"Buscando comissões para matéria {codigo_materia}")
+        logger.info(f"Buscando relatores para matéria {codigo_materia}")
         
-        # Endpoint para distribuição em comissões
-        endpoint = f"materia/distribuicao/{codigo_materia}"
+        # Endpoint para relatoria
+        endpoint = f"materia/relatoria/{codigo_materia}"
         
         # Fazer requisição
         data, from_cache = self._make_request(endpoint)
@@ -531,58 +433,66 @@ class SenadoAPI:
         # Processar resposta
         if not from_cache:
             try:
-                distribuicao = data.get('DistribuicaoMateria', {}).get('Materia', {}).get('Distribuicao', [])
+                relatoria = data.get('RelatoriaMateria', {}).get('Materia', {}).get('Relatoria', [])
                 
                 # Garantir que seja uma lista
-                if not isinstance(distribuicao, list):
-                    distribuicao = [distribuicao]
+                if not isinstance(relatoria, list):
+                    relatoria = [relatoria]
                 
                 # Extrair dados relevantes
-                committees = []
-                for item in distribuicao:
-                    committees.append({
-                        "ComissaoSigla": item.get('LocalDistribuicao', {}).get('SiglaLocal', ''),
-                        "ComissaoNome": item.get('LocalDistribuicao', {}).get('NomeLocal', ''),
-                        "DataDistribuicao": item.get('DataDistribuicao', ''),
-                        "IndicadorDespacho": item.get('IndicadorDespacho', ''),
-                        "IndicadorRelator": item.get('IndicadorRelator', '')
+                relatores = []
+                for rel in relatoria:
+                    parlamentar = rel.get('Parlamentar', {})
+                    comissao = rel.get('Comissao', {})
+                    
+                    relatores.append({
+                        "Nome": parlamentar.get('NomeParlamentar', ''),
+                        "Partido": parlamentar.get('SiglaPartidoParlamentar', ''),
+                        "UF": parlamentar.get('UfParlamentar', ''),
+                        "Comissao": comissao.get('NomeComissao', ''),
+                        "SiglaComissao": comissao.get('SiglaComissao', ''),
+                        "DataDesignacao": rel.get('DataDesignacao', ''),
+                        "DataDestituicao": rel.get('DataDestituicao', '')
                     })
                 
-                return committees
+                return relatores
             except Exception as e:
-                logger.error(f"Erro ao processar comissões da matéria {codigo_materia}: {str(e)}")
+                logger.error(f"Erro ao processar relatores da matéria {codigo_materia}: {str(e)}")
                 return []
         else:
             # Se veio do cache, retorna diretamente
             return data
     
-    def search_pls(self, keywords: List[str] = None, autor: str = None, 
-                  situacao: str = None, limit: int = 20) -> List[Dict]:
+    def search_pls(self, keywords: List[str] = None, date_from: str = None, 
+                  date_to: str = None, author: str = None, limit: int = 20) -> List[Dict]:
         """
         Busca PLs por palavras-chave, autor ou situação.
         
         Args:
             keywords: Lista de palavras-chave para buscar no título/ementa
-            autor: Nome do autor para filtrar
-            situacao: Situação do PL (ex: "Em tramitação")
+            date_from: Data inicial no formato YYYYMMDD
+            date_to: Data final no formato YYYYMMDD
+            author: Nome do autor para filtrar
             limit: Número máximo de resultados
             
         Returns:
             Lista de PLs encontrados
         """
-        logger.info(f"Buscando PLs por: keywords={keywords}, autor={autor}, situacao={situacao}")
+        logger.info(f"Buscando PLs por: keywords={keywords}, author={author}")
         
         # Endpoint para pesquisa
         endpoint = "materia/pesquisa/lista"
         
         # Parâmetros da busca
         params = {
-            "tipomateria": "PL",  # Tipo de matéria: Projeto de Lei
+            "sigla": "PL",  # Tipo de matéria: Projeto de Lei
             "numero": "",
             "ano": "",
-            "palavraschave": " ".join(keywords) if keywords else "",
-            "autor": autor or "",
-            "situacao": situacao or "",
+            "palavras": " ".join(keywords) if keywords else "",
+            "autor": author or "",
+            "dataInicio": date_from or "",
+            "dataFim": date_to or "",
+            "catalogo": "",
             "limit": limit
         }
         
@@ -606,17 +516,20 @@ class SenadoAPI:
                     sigla = identificacao.get('SiglaSubtipoMateria', '')
                     numero = identificacao.get('NumeroMateria', '')
                     ano = identificacao.get('AnoMateria', '')
+                    codigo = identificacao.get('CodigoMateria', '')
                     
                     processed_data.append({
                         "ID": f"{sigla} {numero}/{ano}",
                         "Sigla": sigla,
                         "Numero": numero,
                         "Ano": ano,
+                        "CodigoMateria": codigo,
                         "Título": materia.get('EmentaMateria', ''),
                         "Data": materia.get('DataApresentacao', ''),
-                        "Autor": self._extract_autor(materia),
-                        "Status": self._extract_status(materia),
-                        "URL": self._build_pl_url(sigla, numero, ano)
+                        "Autor": self._extract_autor_from_search(materia),
+                        "Status": self._extract_status_from_search(materia),
+                        "URL": self._build_pl_url(sigla, numero, ano, codigo),
+                        "Palavras-chave": ""  # A API de pesquisa não retorna palavras-chave diretamente
                     })
                 
                 return processed_data
@@ -626,6 +539,100 @@ class SenadoAPI:
         else:
             # Se veio do cache, retorna diretamente
             return data
+    
+    def search_multiple_keywords(self, keywords: List[str], 
+                               start_date: str = None, 
+                               end_date: str = None,
+                               limit: int = 50) -> pd.DataFrame:
+        """
+        Realiza busca com múltiplas palavras-chave e consolida os resultados.
+        
+        Args:
+            keywords: Lista de palavras-chave para buscar
+            start_date: Data inicial no formato YYYYMMDD
+            end_date: Data final no formato YYYYMMDD
+            limit: Limite de resultados por palavra-chave
+            
+        Returns:
+            DataFrame com os resultados consolidados
+        """
+        logger.info(f"Buscando PLs para {len(keywords)} palavras-chave")
+        
+        all_results = []
+        matched_keywords = {}
+        
+        # Buscar para cada palavra-chave
+        for keyword in keywords:
+            try:
+                results = self.search_pls(
+                    keywords=[keyword], 
+                    date_from=start_date, 
+                    date_to=end_date,
+                    limit=limit
+                )
+                
+                # Registrar correspondências de palavras-chave
+                for result in results:
+                    pl_id = result['ID']
+                    if pl_id not in matched_keywords:
+                        matched_keywords[pl_id] = []
+                    matched_keywords[pl_id].append(keyword)
+                
+                all_results.extend(results)
+            except Exception as e:
+                logger.error(f"Erro ao buscar PLs para palavra-chave '{keyword}': {str(e)}")
+        
+        # Remover duplicatas (mesmo PL encontrado por palavras-chave diferentes)
+        unique_results = {}
+        for result in all_results:
+            pl_id = result['ID']
+            if pl_id not in unique_results:
+                unique_results[pl_id] = result
+                
+                # Adicionar palavras-chave correspondidas
+                if pl_id in matched_keywords:
+                    result['Palavras-chave Correspondidas'] = ', '.join(matched_keywords[pl_id])
+        
+        # Converter para DataFrame
+        if unique_results:
+            df = pd.DataFrame(list(unique_results.values()))
+            
+            # Tentar buscar palavras-chave para cada resultado
+            try:
+                self._enrich_with_keywords(df)
+                logger.info(f"Resultados da busca enriquecidos com palavras-chave para {len(df)} PLs")
+            except Exception as e:
+                logger.error(f"Erro ao enriquecer resultados com palavras-chave: {str(e)}")
+            
+            return df
+        else:
+            # Retornar DataFrame vazio com colunas esperadas
+            return pd.DataFrame(columns=[
+                'ID', 'Sigla', 'Numero', 'Ano', 'CodigoMateria', 'Título', 'Data', 
+                'Autor', 'Status', 'URL', 'Palavras-chave', 'Palavras-chave Correspondidas'
+            ])
+
+    def _enrich_with_keywords(self, df: pd.DataFrame) -> None:
+        """
+        Enriquece o DataFrame de resultados com palavras-chave buscando detalhes adicionais.
+        
+        Args:
+            df: DataFrame com resultados de busca
+        """
+        # Para cada PL, tentar buscar suas palavras-chave
+        for i, row in df.iterrows():
+            try:
+                sigla = row['Sigla']
+                numero = row['Numero']
+                ano = row['Ano']
+                
+                # Buscar detalhes apenas se não tivermos palavras-chave
+                if not row.get('Palavras-chave'):
+                    details = self.get_pl_by_id(sigla, numero, ano)
+                    if details and 'Palavras-chave' in details:
+                        df.at[i, 'Palavras-chave'] = details['Palavras-chave']
+            except Exception as e:
+                logger.warning(f"Erro ao enriquecer PL {row['ID']} com palavras-chave: {str(e)}")
     
     def get_recent_pls(self, limit: int = 10) -> List[Dict]:
         """
@@ -644,8 +651,8 @@ class SenadoAPI:
         
         # Parâmetros da busca
         params = {
-            "tipomateria": "PL",  # Tipo de matéria: Projeto de Lei
-            "ordenacao": "ULTALT_DESC",  # Ordenação por data de apresentação (mais recentes primeiro)
+            "sigla": "PL",  # Tipo de matéria: Projeto de Lei
+            "ordenacao": "DTAPRES_DESC",  # Ordenação por data de apresentação (mais recentes primeiro)
             "limit": limit
         }
         
@@ -669,17 +676,19 @@ class SenadoAPI:
                     sigla = identificacao.get('SiglaSubtipoMateria', '')
                     numero = identificacao.get('NumeroMateria', '')
                     ano = identificacao.get('AnoMateria', '')
+                    codigo = identificacao.get('CodigoMateria', '')
                     
                     processed_data.append({
                         "ID": f"{sigla} {numero}/{ano}",
                         "Sigla": sigla,
                         "Numero": numero,
                         "Ano": ano,
+                        "CodigoMateria": codigo,
                         "Título": materia.get('EmentaMateria', ''),
                         "Data": materia.get('DataApresentacao', ''),
-                        "Autor": self._extract_autor(materia),
-                        "Status": self._extract_status(materia),
-                        "URL": self._build_pl_url(sigla, numero, ano)
+                        "Autor": self._extract_autor_from_search(materia),
+                        "Status": self._extract_status_from_search(materia),
+                        "URL": self._build_pl_url(sigla, numero, ano, codigo)
                     })
                 
                 return processed_data
@@ -692,7 +701,7 @@ class SenadoAPI:
     
     def _extract_autor(self, materia: Dict) -> str:
         """
-        Extrai o nome do autor de uma matéria.
+        Extrai o nome do autor de uma matéria detalhada.
         
         Args:
             materia: Dados da matéria
@@ -702,96 +711,86 @@ class SenadoAPI:
         """
         try:
             # Primeiro, tentar pegar do DadosBasicosMateria
-            autor_basico = materia.get('DadosBasicosMateria', {}).get('Autor', '')
+            autor_basico = materia.get('DadosBasicosMateria', {}).get('NomeAutor', '')
             if autor_basico:
                 return autor_basico
             
             # Se não tiver lá, tentar na Autoria
-            autoria = materia.get('Autoria', {}).get('Autor', [])
+            autoria = materia.get('Autoria', {})
+            if isinstance(autoria, dict):
+                autores = autoria.get('Autor', [])
+                
+                # Garantir que seja uma lista
+                if not isinstance(autores, list):
+                    autores = [autores]
+                
+                # Extrair nomes dos autores
+                nomes_autores = []
+                for autor in autores:
+                    nome = autor.get('NomeAutor', '')
+                    if nome:
+                        nomes_autores.append(nome)
+                
+                # Retornar string com autores separados por vírgula
+                return ", ".join(nomes_autores) if nomes_autores else "Não informado"
             
-            # Garantir que seja uma lista
-            if not isinstance(autoria, list):
-                autoria = [autoria]
-            
-            # Extrair nomes dos autores
-            autores = []
-            for autor in autoria:
-                nome = autor.get('NomeAutor', '')
-                if nome:
-                    autores.append(nome)
-            
-            # Retornar string com autores separados por vírgula
-            return ", ".join(autores) if autores else "Não informado"
+            return "Não informado"
         except Exception as e:
             logger.error(f"Erro ao extrair autor: {str(e)}")
             return "Não informado"
     
-    def _extract_status(self, materia: Dict) -> str:
+    def _extract_autor_from_search(self, materia: Dict) -> str:
         """
-        Extrai o status atual de uma matéria.
+        Extrai o nome do autor de uma matéria retornada pela pesquisa.
         
         Args:
-            materia: Dados da matéria
+            materia: Dados da matéria da pesquisa
+            
+        Returns:
+            Nome do autor
+        """
+        try:
+            # Na pesquisa, o autor pode estar em formato diferente
+            autor = materia.get('AutoriaMateria', {})
+            if autor:
+                autor_nome = autor.get('Autor', {}).get('NomeAutor', '')
+                if autor_nome:
+                    return autor_nome
+            
+            return "Não informado"
+        except Exception as e:
+            logger.error(f"Erro ao extrair autor da pesquisa: {str(e)}")
+            return "Não informado"
+    
+    def _extract_status_from_search(self, materia: Dict) -> str:
+        """
+        Extrai o status atual de uma matéria retornada pela pesquisa.
+        
+        Args:
+            materia: Dados da matéria da pesquisa
             
         Returns:
             Status atual
         """
         try:
-            situacao = materia.get('SituacaoAtual', {}).get('Situacao', {})
-            local = materia.get('SituacaoAtual', {}).get('Local', {})
+            situacao = materia.get('SituacaoAtual', {})
+            if situacao:
+                situacao_desc = situacao.get('Descricao', {}).get('DescricaoSituacao', '')
+                local = situacao.get('Local', {}).get('NomeLocal', '')
+                
+                if situacao_desc and local:
+                    return f"{situacao_desc} - {local}"
+                elif situacao_desc:
+                    return situacao_desc
+                elif local:
+                    return f"Em tramitação - {local}"
             
-            descricao = situacao.get('DescricaoSituacao', '')
-            nome_local = local.get('NomeLocal', '')
-            
-            if descricao and nome_local:
-                return f"{descricao} - {nome_local}"
-            elif descricao:
-                return descricao
-            elif nome_local:
-                return f"Em tramitação - {nome_local}"
-            else:
-                return "Status não informado"
+            return "Status não informado"
         except Exception as e:
-            logger.error(f"Erro ao extrair status: {str(e)}")
+            logger.error(f"Erro ao extrair status da pesquisa: {str(e)}")
             return "Status não informado"
     
-    def _extract_keywords(self, materia: Dict) -> str:
-        """
-        Extrai palavras-chave de uma matéria.
-        
-        Args:
-            materia: Dados da matéria
-            
-        Returns:
-            String com palavras-chave separadas por vírgula
-        """
-        try:
-            # Extrair da indexação na estrutura correta
-            indexacao = materia.get('DadosBasicosMateria', {}).get('IndexacaoMateria', '')
-            return indexacao
-        except Exception as e:
-            logger.error(f"Erro ao extrair palavras-chave: {str(e)}")
-            return ""
-    
-    def _extract_tramitacao(self, materia: Dict) -> List[Dict]:
-        """
-        Extrai os últimos eventos da tramitação de uma matéria.
-        
-        Args:
-            materia: Dados da matéria
-            
-        Returns:
-            Lista com os últimos eventos da tramitação
-        """
-        try:
-            # Os dados básicos da matéria geralmente não incluem tramitação detalhada
-            # Este método é um placeholder para quando a API retornar tramitação no detalhe da matéria
-            return []
-        except Exception as e:
-            logger.error(f"Erro ao extrair tramitação: {str(e)}")
-            return []
-    
-    def _build_pl_url(self, sigla: str, numero: str, ano: str) -> str:
+    def _build_pl_url(self, sigla: str, numero: str, ano: str, codigo_materia: str = None) -> str:
         """
         Constrói a URL para acessar o PL no site do Senado.
         
@@ -799,8 +798,39 @@ class SenadoAPI:
             sigla: Sigla do PL
             numero: Número do PL
             ano: Ano do PL
+            codigo_materia: Código da matéria (para URL mais precisa)
             
         Returns:
             URL para acessar o PL
         """
-        return f"https://www25.senado.leg.br/web/atividade/materias/-/materia/{numero}{ano}"
+        if codigo_materia:
+            return f"https://www25.senado.leg.br/web/atividade/materias/-/materia/{codigo_materia}"
+        else:
+            return f"https://www25.senado.leg.br/web/atividade/materias/-/materia/busca?b_pesquisaMaterias=proposicao_PL_Projeto+de+Lei_{numero}_{ano}"
+
+# Testes básicos
+if __name__ == "__main__":
+    api = SenadoAPI()
+    
+    # Teste: buscar PL específico
+    pl = api.get_pl_by_id("PL", "2234", "2022")
+    print(f"Detalhes do PL 2234/2022:")
+    if pl:
+        print(f"  Título: {pl.get('Título', '')[:100]}...")
+        print(f"  Autor: {pl.get('Autor', '')}")
+        print(f"  Status: {pl.get('Status', '')}")
+        print(f"  URL: {pl.get('URL', '')}")
+        
+        # Verificar se tem relatores
+        if 'Relatores' in pl:
+            print("\nRelatores:")
+            for relator in pl['Relatores']:
+                print(f"  {relator.get('Nome', '')} ({relator.get('Partido', '')}/{relator.get('UF', '')}) - {relator.get('Comissao', '')}")
+    else:
+        print("PL não encontrado")
+    
+    # Teste: buscar por palavras-chave
+    print("\nBusca por 'apostas':")
+    results = api.search_pls(keywords=["apostas"], limit=5)
+    for i, res in enumerate(results):
+        print(f"{i+1}. {res['ID']}: {res['Título'][:100]}...")
