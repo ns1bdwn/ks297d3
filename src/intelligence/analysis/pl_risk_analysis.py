@@ -1212,32 +1212,57 @@ class PLRiskAnalyzer:
             })
             
         # 6. Se o PL estiver em estágio inicial ou outro local
+         else:
+        # Caso genérico ou início de tramitação
+        if tem_relator:
+            # Se já tem relator designado, adaptar os próximos passos
+            next_steps = [
+                {
+                    "passo": "Distribuição para Comissões",
+                    "probabilidade": "Alta",
+                    "observacao": "PL será distribuído para análise em comissões pertinentes",
+                    "contexto": f"{'Sendo de autoria da liderança/executivo, tende a ter tramitação prioritária. ' if autor_influente else ''}"
+                              f"A distribuição inicial geralmente ocorre em até 15 dias após a apresentação."
+                },
+                {
+                    "passo": "Emissão de Parecer pelo Relator",
+                    "probabilidade": "Alta",
+                    "observacao": f"Relator já designado: {relator_nome}",
+                    "contexto": f"O relator {relator_nome} já foi designado e deverá emitir parecer. "
+                               f"Com relator já designado, o processo tende a avançar mais rapidamente."
+                },
+                {
+                    "passo": "Inclusão na pauta de comissão",
+                    "probabilidade": "Média", # Probabilidade aumentada, pois já tem relator
+                    "observacao": "PL deve ser incluído na pauta de votação após o parecer do relator",
+                    "contexto": f"{'PLs de autoria influente tendem a entrar mais rapidamente na pauta. ' if autor_influente else ''}"
+                              f"O tempo médio para inclusão na pauta após emissão de parecer é de aproximadamente 30 dias."
+                }
+            ]
         else:
-            # Se já tiver relator designado
-            if tem_relator:
-                next_steps = [
-                    {
-                        "passo": "Distribuição para Comissões",
-                        "probabilidade": "Alta",
-                        "observacao": "PL será distribuído para análise em comissões pertinentes",
-                        "contexto": f"{'Sendo de autoria da liderança/executivo, tende a ter tramitação prioritária. ' if autor_influente else ''}"
-                                  f"A distribuição inicial geralmente ocorre em até 15 dias após a apresentação."
-                    },
-                    {
-                        "passo": "Emissão de Parecer pelo Relator",
-                        "probabilidade": "Alta",
-                        "observacao": f"Relator já designado: {relator_nome}",
-                        "contexto": f"Relator já foi designado, o que acelera o processo de análise."
-                    },
-                    {
-                        "passo": "Inclusão na pauta de comissão",
-                        "probabilidade": "Média",
-                        "observacao": "PL pode ser incluído na pauta de votação de alguma comissão",
-                        "contexto": f"{'PLs com relator já designado entram mais rapidamente na pauta. ' if tem_relator else ''}"
-                                  f"{'PLs de autoria influente tendem a entrar mais rapidamente na pauta. ' if autor_influente else ''}"
-                                  f"O tempo médio para inclusão na pauta após designação de relator é de aproximadamente 30 dias."
-                    }
-                ]
+            # Caso não tenha relator designado, manter a lógica atual
+            next_steps = [
+                {
+                    "passo": "Distribuição para Comissões",
+                    "probabilidade": "Alta",
+                    "observacao": "PL será distribuído para análise em comissões pertinentes",
+                    "contexto": f"{'Sendo de autoria da liderança/executivo, tende a ter tramitação prioritária. ' if autor_influente else ''}"
+                              f"A distribuição inicial geralmente ocorre em até 15 dias após a apresentação."
+                },
+                {
+                    "passo": "Designação de Relator",
+                    "probabilidade": "Média",
+                    "observacao": "Designação de relator para analisar o PL",
+                    "contexto": "A designação de relator é fundamental para o andamento do PL e geralmente ocorre após a distribuição para comissões."
+                },
+                {
+                    "passo": "Inclusão na pauta de comissão",
+                    "probabilidade": "Baixa",
+                    "observacao": "PL pode ser incluído na pauta de votação de alguma comissão",
+                    "contexto": f"{'PLs de autoria influente tendem a entrar mais rapidamente na pauta. ' if autor_influente else ''}"
+                              f"O tempo médio para inclusão na pauta após designação de relator é de aproximadamente 45 dias."
+                }
+            ]
             else:
                 next_steps = [
                     {
