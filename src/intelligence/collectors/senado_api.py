@@ -7,9 +7,10 @@ import requests
 import logging
 import json
 import os
-import xmltodict  # Para processar respostas XML
-import pandas as pd  # Adicione esta linha
+import re
+import xmltodict
 from datetime import datetime
+import pandas as pd
 from typing import Dict, List, Any, Optional, Tuple
 
 # Configuração de logging
@@ -209,104 +210,8 @@ class SenadoAPI:
             return {}, False
     
     def get_pl_by_id(self, sigla: str, numero: str, ano: str) -> Dict:
-    """
-    Obtém detalhes de um PL específico.
-    
-    Args:
-        sigla: Sigla do PL (ex: PL, PEC)
-        numero: Número do PL
-        ano: Ano do PL
-        
-    Returns:
-        Dicionário com detalhes do PL
-    """
-    logger.info(f"Buscando PL {sigla} {numero}/{ano} na API do Senado")
-    
-    # Endpoint para matéria legislativa
-    endpoint = f"materia/{sigla}/{numero}/{ano}"
-    
-    # Fazer requisição
-    data, from_cache = self._make_request(endpoint)
-    
-    if not data:
-        logger.warning(f"PL {sigla} {numero}/{ano} não encontrado na API do Senado")
-        return {}
-    
-    # Extrair a matéria do objeto DetalheMateria
-    materia = data.get('DetalheMateria', {}).get('Materia', {})
-    if not materia:
-        logger.warning(f"PL {sigla} {numero}/{ano} não encontrado na API do Senado")
-        return {}
-    
-    # Extrair código da matéria (para buscar situação atual)
-    codigo_materia = materia.get('IdentificacaoMateria', {}).get('CodigoMateria')
-    
-    # Extrair dados básicos
-    dados_basicos = materia.get('DadosBasicosMateria', {})
-    
-    # Processando os dados para o formato esperado pelo PLRiskAnalyzer
-    processed_data = {
-        "Título": dados_basicos.get('EmentaMateria', ''),
-        "Data": dados_basicos.get('DataApresentacao', ''),
-        "Autor": dados_basicos.get('Autor', ''),
-        "Status": "Em tramitação",  # Será atualizado com dados da situação atual
-        "URL": self._build_pl_url(sigla, numero, ano, codigo_materia),
-        "Palavras-chave": dados_basicos.get('IndexacaoMateria', ''),
-        "Situacao": {
-            "Local": "",
-            "Situacao": "",
-            "Data": ""
-        },
-        "Tramitacao": []
-    }
-    
-    # Se temos o código da matéria, buscar situação atual (mais confiável)
-    if codigo_materia:
-        situacao_endpoint = f"materia/situacaoatual/{codigo_materia}"
-        situacao_data, situacao_from_cache = self._make_request(situacao_endpoint)
-        
-        if situacao_data:
-            try:
-                situacao = situacao_data.get('SituacaoAtualMateria', {}).get('Materia', {})
-                
-                if situacao:
-                    # Atualizar status e situação
-                    local = situacao.get('Local', {}).get('NomeLocal', '')
-                    situacao_desc = situacao.get('Situacao', {}).get('DescricaoSituacao', '')
-                    data_situacao = situacao.get('Situacao', {}).get('DataSituacao', '')
-                    
-                    # Atualizar com dados mais precisos
-                    if local or situacao_desc:
-                        processed_data["Status"] = f"{situacao_desc} - {local}" if situacao_desc and local else (situacao_desc or local or "Em tramitação")
-                    
-                    processed_data["Situacao"] = {
-                        "Local": local,
-                        "Situacao": situacao_desc,
-                        "Data": data_situacao
-                    }
-            except Exception as e:
-                logger.error(f"Erro ao processar situação atual do PL {sigla} {numero}/{ano}: {str(e)}")
-    
-    # Buscar tramitação detalhada
-    tramitacao_data = self.get_pl_tramitacao(sigla, numero, ano, codigo_materia)
-    if tramitacao_data:
-        processed_data["Tramitacao"] = tramitacao_data
-    
-    # Adicionar o código da matéria para uso futuro
-    processed_data["CodigoMateria"] = codigo_materia
-    
-    # Buscar relatores
-    if codigo_materia:
-        relatores = self.get_pl_relatores(codigo_materia)
-        if relatores:
-            processed_data["Relatores"] = relatores
-    
-    return processed_data
-            
-    def get_additional_pl_details(self, sigla: str, numero: str, ano: str) -> Dict[str, Any]:
         """
-        Obtém detalhes adicionais de um PL específico, formatados para análise de risco.
-        Este método é um wrapper compatível para o PLRiskAnalyzer.
+        Obtém detalhes de um PL específico.
         
         Args:
             sigla: Sigla do PL (ex: PL, PEC)
@@ -314,31 +219,142 @@ class SenadoAPI:
             ano: Ano do PL
             
         Returns:
-            Dicionário com detalhes do PL formatados para análise de risco
+            Dicionário com detalhes do PL
         """
-        # Chamar o método existente para obter detalhes básicos
-        basic_details = self.get_pl_by_id(sigla, numero, ano)
+        logger.info(f"Buscando PL {sigla} {numero}/{ano} na API do Senado")
         
-        if not basic_details:
+        # Endpoint para matéria legislativa
+        endpoint = f"materia/{sigla}/{numero}/{ano}"
+        
+        # Fazer requisição
+        data, from_cache = self._make_request(endpoint)
+        
+        if not data:
+            logger.warning(f"PL {sigla} {numero}/{ano} não encontrado na API do Senado")
             return {}
         
-        # Adicionar campos extras que o analisador de risco espera
-        details = {
-            **basic_details,  # Manter todos os campos existentes
-            "detalhes_adicionais": {
-                "autoria_detalhada": self._extract_autoria_details(basic_details),
-                "projetos_relacionados": self._find_related_projects(sigla, numero, ano)
+        # Processar dados recebidos (seja do cache ou da API)
+        try:
+            # Acessar estrutura da matéria
+            materia = data.get('DetalheMateria', {}).get('Materia', {})
+            
+            if not materia:
+                logger.warning(f"PL {sigla} {numero}/{ano} não encontrado nos dados")
+                return {}
+            
+            # Extrair dados básicos
+            dados_basicos = materia.get('DadosBasicosMateria', {})
+            identificacao = materia.get('IdentificacaoMateria', {})
+            
+            # Extrair código da matéria
+            codigo_materia = identificacao.get('CodigoMateria')
+            
+            # Montar objeto de resposta processado
+            processed_data = {
+                "Título": dados_basicos.get('EmentaMateria', ''),
+                "Data": dados_basicos.get('DataApresentacao', ''),
+                "Autor": dados_basicos.get('Autor', ''),
+                "Status": "Em tramitação",  # Será atualizado com dados da situação atual
+                "URL": self._build_pl_url(sigla, numero, ano, codigo_materia),
+                "Palavras-chave": dados_basicos.get('IndexacaoMateria', ''),
+                "Situacao": {
+                    "Local": "",
+                    "Situacao": "",
+                    "Data": ""
+                },
+                "Tramitacao": []
             }
-        }
-        
-        # Garantir que a estrutura está completa com campos esperados pelo analisador
-        if "Tramitacao" not in details:
-            details["Tramitacao"] = []
-        
-        if "Tramitacao_Detalhada" not in details:
-            details["Tramitacao_Detalhada"] = details["Tramitacao"]
-        
-        return details
+            
+            # Se temos o código da matéria, buscar situação atual
+            if codigo_materia:
+                try:
+                    situacao_endpoint = f"materia/situacaoatual/{codigo_materia}"
+                    situacao_data, situacao_from_cache = self._make_request(situacao_endpoint)
+                    
+                    if situacao_data:
+                        situacao = situacao_data.get('SituacaoAtualMateria', {}).get('Materia', {})
+                        
+                        if situacao:
+                            # Extrair dados de situação
+                            local = situacao.get('Local', {}).get('NomeLocal', '')
+                            situacao_desc = situacao.get('Situacao', {}).get('DescricaoSituacao', '')
+                            data_situacao = situacao.get('Situacao', {}).get('DataSituacao', '')
+                            
+                            # Atualizar objeto de resposta
+                            if local or situacao_desc:
+                                processed_data["Status"] = f"{situacao_desc} - {local}" if situacao_desc and local else (situacao_desc or local or "Em tramitação")
+                            
+                            processed_data["Situacao"] = {
+                                "Local": local,
+                                "Situacao": situacao_desc,
+                                "Data": data_situacao
+                            }
+                except Exception as e:
+                    logger.error(f"Erro ao obter situação do PL {sigla} {numero}/{ano}: {str(e)}")
+            
+            # Buscar tramitação
+            try:
+                tramitacao = self.get_pl_tramitacao(sigla, numero, ano, codigo_materia)
+                if tramitacao:
+                    processed_data["Tramitacao"] = tramitacao
+                    processed_data["ultimos_eventos"] = tramitacao[:5]  # Adicionar os 5 eventos mais recentes
+            except Exception as e:
+                logger.error(f"Erro ao obter tramitação do PL {sigla} {numero}/{ano}: {str(e)}")
+            
+            # Adicionar código da matéria
+            processed_data["CodigoMateria"] = codigo_materia
+            
+            # Buscar relatores
+            try:
+                if codigo_materia:
+                    # Tratar especificamente erros 404 para evitar falha na análise
+                    try:
+                        response = self.session.get(f"{self.BASE_URL}/materia/relatoria/{codigo_materia}")
+                        if response.status_code == 404:
+                            logger.warning(f"Relatoria não disponível para PL {sigla} {numero}/{ano}")
+                            processed_data["Relatores"] = []
+                        elif response.status_code == 200:
+                            # Processar relatores normalmente
+                            data = xmltodict.parse(response.content)
+                            relatoria = data.get('RelatoriaMateria', {}).get('Materia', {}).get('Relatoria', [])
+                            
+                            # Garantir que seja uma lista
+                            if not isinstance(relatoria, list):
+                                relatoria = [relatoria] if relatoria else []
+                            
+                            # Extrair dados de relatores
+                            relatores = []
+                            for rel in relatoria:
+                                if not rel:
+                                    continue
+                                parlamentar = rel.get('Parlamentar', {})
+                                comissao = rel.get('Comissao', {})
+                                
+                                relatores.append({
+                                    "Nome": parlamentar.get('NomeParlamentar', ''),
+                                    "Partido": parlamentar.get('SiglaPartidoParlamentar', ''),
+                                    "UF": parlamentar.get('UfParlamentar', ''),
+                                    "Comissao": comissao.get('NomeComissao', ''),
+                                    "SiglaComissao": comissao.get('SiglaComissao', ''),
+                                    "DataDesignacao": rel.get('DataDesignacao', ''),
+                                    "DataDestituicao": rel.get('DataDestituicao', '')
+                                })
+                            
+                            processed_data["Relatores"] = relatores
+                        else:
+                            logger.error(f"Erro {response.status_code} ao acessar relatoria do PL {sigla} {numero}/{ano}")
+                            processed_data["Relatores"] = []
+                    except Exception as e:
+                        logger.error(f"Erro ao obter relatores do PL {sigla} {numero}/{ano}: {str(e)}")
+                        processed_data["Relatores"] = []
+            except Exception as e:
+                logger.error(f"Erro geral ao processar relatores do PL {sigla} {numero}/{ano}: {str(e)}")
+                processed_data["Relatores"] = []
+            
+            return processed_data
+        except Exception as e:
+            logger.error(f"Erro ao processar dados do PL {sigla} {numero}/{ano}: {str(e)}")
+            return {}
     
     def get_pl_tramitacao(self, sigla: str, numero: str, ano: str, codigo_materia: str = None) -> List[Dict]:
         """
@@ -374,26 +390,70 @@ class SenadoAPI:
             # Endpoint para movimentações
             endpoint = f"materia/movimentacoes/{codigo_materia}"
             
-            # Fazer requisição
-            data, from_cache = self._make_request(endpoint)
+            try:
+                # Fazer requisição
+                response = self.session.get(f"{self.BASE_URL}/{endpoint}")
+                
+                if response.status_code == 200:
+                    try:
+                        # Processar XML
+                        data = xmltodict.parse(response.content)
+                        movimentacoes = data.get('MovimentacaoMateria', {}).get('Movimentacoes', {}).get('Movimentacao', [])
+                        
+                        # Garantir que seja uma lista
+                        if not isinstance(movimentacoes, list):
+                            movimentacoes = [movimentacoes] if movimentacoes else []
+                        
+                        # Extrair dados relevantes
+                        processed_data = []
+                        for evento in movimentacoes:
+                            if not evento:
+                                continue
+                            processed_data.append({
+                                "Data": evento.get('DataMovimentacao', ''),
+                                "Local": evento.get('Local', {}).get('NomeLocal', ''),
+                                "Situacao": evento.get('Situacao', {}).get('DescricaoSituacao', ''),
+                                "Texto": evento.get('TextoMovimentacao', '')
+                            })
+                        
+                        # Ordenar por data (mais recente primeiro)
+                        processed_data.sort(key=lambda x: x.get('Data', ''), reverse=True)
+                        
+                        return processed_data
+                    except Exception as e:
+                        logger.error(f"Erro ao processar movimentações do PL {sigla} {numero}/{ano}: {str(e)}")
+                else:
+                    logger.error(f"Erro {response.status_code} ao acessar movimentações do PL {sigla} {numero}/{ano}")
+            except Exception as e:
+                logger.error(f"Erro ao buscar movimentações do PL {sigla} {numero}/{ano}: {str(e)}")
+        
+        # Caso o método acima falhe, tentamos a URL direta de tramitação
+        endpoint_tramitacao = f"materia/tramitacao/{sigla}/{numero}/{ano}"
+        
+        try:
+            # Fazer requisição direta
+            response = self.session.get(f"{self.BASE_URL}/{endpoint_tramitacao}")
             
-            # Processar resposta
-            if not from_cache:
+            if response.status_code == 200:
                 try:
-                    movimentacoes = data.get('MovimentacaoMateria', {}).get('Movimentacoes', {}).get('Movimentacao', [])
+                    # Processar XML
+                    data = xmltodict.parse(response.content)
+                    tramitacao = data.get('TramitacaoMateria', {}).get('Tramitacoes', {}).get('Tramitacao', [])
                     
                     # Garantir que seja uma lista
-                    if not isinstance(movimentacoes, list):
-                        movimentacoes = [movimentacoes]
+                    if not isinstance(tramitacao, list):
+                        tramitacao = [tramitacao] if tramitacao else []
                     
                     # Extrair dados relevantes
                     processed_data = []
-                    for evento in movimentacoes:
+                    for evento in tramitacao:
+                        if not evento:
+                            continue
                         processed_data.append({
-                            "Data": evento.get('DataMovimentacao', ''),
-                            "Local": evento.get('Local', {}).get('NomeLocal', ''),
-                            "Situacao": evento.get('Situacao', {}).get('DescricaoSituacao', ''),
-                            "Texto": evento.get('TextoMovimentacao', '')
+                            "Data": evento.get('DataTramitacao', ''),
+                            "Local": evento.get('IdentificacaoLocal', ''),
+                            "Situacao": evento.get('SituacaoTramitacao', {}).get('DescricaoSituacao', ''),
+                            "Texto": evento.get('TextoTramitacao', '')
                         })
                     
                     # Ordenar por data (mais recente primeiro)
@@ -401,48 +461,15 @@ class SenadoAPI:
                     
                     return processed_data
                 except Exception as e:
-                    logger.error(f"Erro ao processar movimentações do PL {sigla} {numero}/{ano}: {str(e)}")
+                    logger.error(f"Erro ao processar tramitação do PL {sigla} {numero}/{ano}: {str(e)}")
             else:
-                # Se veio do cache, retorna diretamente
-                return data
+                logger.error(f"Erro {response.status_code} ao acessar tramitação do PL {sigla} {numero}/{ano}")
+        except Exception as e:
+            logger.error(f"Erro ao buscar tramitação do PL {sigla} {numero}/{ano}: {str(e)}")
         
-        # Caso o método acima falhe, tentamos a URL direta de tramitação
-        endpoint_tramitacao = f"materia/tramitacao/{sigla}/{numero}/{ano}"
-        
-        # Fazer requisição
-        data, from_cache = self._make_request(endpoint_tramitacao)
-        
-        # Processar resposta
-        if not from_cache:
-            try:
-                tramitacao = data.get('TramitacaoMateria', {}).get('Tramitacoes', {}).get('Tramitacao', [])
-                
-                # Garantir que seja uma lista
-                if not isinstance(tramitacao, list):
-                    tramitacao = [tramitacao]
-                
-                # Extrair dados relevantes
-                processed_data = []
-                for evento in tramitacao:
-                    processed_data.append({
-                        "Data": evento.get('DataTramitacao', ''),
-                        "Local": evento.get('IdentificacaoLocal', ''),
-                        "Situacao": evento.get('SituacaoTramitacao', {}).get('DescricaoSituacao', ''),
-                        "Texto": evento.get('TextoTramitacao', '')
-                    })
-                
-                # Ordenar por data (mais recente primeiro)
-                processed_data.sort(key=lambda x: x.get('Data', ''), reverse=True)
-                
-                return processed_data
-            except Exception as e:
-                logger.error(f"Erro ao processar tramitação do PL {sigla} {numero}/{ano}: {str(e)}")
-                # Retornar lista vazia em caso de erro
-                return []
-        else:
-            # Se veio do cache, retorna diretamente
-            return data
-
+        # Se tudo falhar, retorna lista vazia
+        return []
+    
     def get_pl_relatores(self, codigo_materia: str) -> List[Dict]:
         """
         Obtém os relatores designados para um PL.
@@ -455,44 +482,53 @@ class SenadoAPI:
         """
         logger.info(f"Buscando relatores para matéria {codigo_materia}")
         
-        # Endpoint para relatoria
-        endpoint = f"materia/relatoria/{codigo_materia}"
-        
-        # Fazer requisição
-        data, from_cache = self._make_request(endpoint)
-        
-        # Processar resposta
-        if not from_cache:
-            try:
-                relatoria = data.get('RelatoriaMateria', {}).get('Materia', {}).get('Relatoria', [])
-                
-                # Garantir que seja uma lista
-                if not isinstance(relatoria, list):
-                    relatoria = [relatoria]
-                
-                # Extrair dados relevantes
-                relatores = []
-                for rel in relatoria:
-                    parlamentar = rel.get('Parlamentar', {})
-                    comissao = rel.get('Comissao', {})
+        try:
+            # Endpoint para relatoria
+            response = self.session.get(f"{self.BASE_URL}/materia/relatoria/{codigo_materia}")
+            
+            # Tratar erro 404 explicitamente
+            if response.status_code == 404:
+                logger.warning(f"Endpoint de relatoria não disponível para matéria {codigo_materia}")
+                return []  # Retornar lista vazia quando o endpoint não existir
+            
+            # Processar resposta normal se não for 404
+            if response.status_code == 200:
+                try:
+                    data = xmltodict.parse(response.content)
+                    relatoria = data.get('RelatoriaMateria', {}).get('Materia', {}).get('Relatoria', [])
                     
-                    relatores.append({
-                        "Nome": parlamentar.get('NomeParlamentar', ''),
-                        "Partido": parlamentar.get('SiglaPartidoParlamentar', ''),
-                        "UF": parlamentar.get('UfParlamentar', ''),
-                        "Comissao": comissao.get('NomeComissao', ''),
-                        "SiglaComissao": comissao.get('SiglaComissao', ''),
-                        "DataDesignacao": rel.get('DataDesignacao', ''),
-                        "DataDestituicao": rel.get('DataDestituicao', '')
-                    })
-                
-                return relatores
-            except Exception as e:
-                logger.error(f"Erro ao processar relatores da matéria {codigo_materia}: {str(e)}")
+                    # Garantir que seja uma lista
+                    if not isinstance(relatoria, list):
+                        relatoria = [relatoria] if relatoria else []
+                    
+                    # Extrair dados relevantes
+                    relatores = []
+                    for rel in relatoria:
+                        if not rel:
+                            continue
+                        parlamentar = rel.get('Parlamentar', {})
+                        comissao = rel.get('Comissao', {})
+                        
+                        relatores.append({
+                            "Nome": parlamentar.get('NomeParlamentar', ''),
+                            "Partido": parlamentar.get('SiglaPartidoParlamentar', ''),
+                            "UF": parlamentar.get('UfParlamentar', ''),
+                            "Comissao": comissao.get('NomeComissao', ''),
+                            "SiglaComissao": comissao.get('SiglaComissao', ''),
+                            "DataDesignacao": rel.get('DataDesignacao', ''),
+                            "DataDestituicao": rel.get('DataDestituicao', '')
+                        })
+                    
+                    return relatores
+                except Exception as e:
+                    logger.error(f"Erro ao processar relatores da matéria {codigo_materia}: {str(e)}")
+                    return []
+            else:
+                logger.error(f"Erro {response.status_code} ao acessar relatoria para matéria {codigo_materia}")
                 return []
-        else:
-            # Se veio do cache, retorna diretamente
-            return data
+        except Exception as e:
+            logger.error(f"Erro ao buscar relatores para matéria {codigo_materia}: {str(e)}")
+            return []
     
     def search_pls(self, keywords: List[str] = None, date_from: str = None, 
                   date_to: str = None, author: str = None, limit: int = 20) -> List[Dict]:
@@ -537,11 +573,13 @@ class SenadoAPI:
                 
                 # Garantir que seja uma lista
                 if not isinstance(materias, list):
-                    materias = [materias]
+                    materias = [materias] if materias else []
                 
                 # Extrair dados relevantes
                 processed_data = []
                 for materia in materias:
+                    if not materia:
+                        continue
                     # Extrair sigla, número e ano do IdentificacaoMateria
                     identificacao = materia.get('IdentificacaoMateria', {})
                     sigla = identificacao.get('SiglaSubtipoMateria', '')
@@ -587,8 +625,8 @@ class SenadoAPI:
         Returns:
             DataFrame com os resultados consolidados
         """
-        import pandas as pd
-                
+        logger.info(f"Buscando PLs para {len(keywords)} palavras-chave")
+        
         all_results = []
         matched_keywords = {}
         
@@ -642,7 +680,7 @@ class SenadoAPI:
                 'ID', 'Sigla', 'Numero', 'Ano', 'CodigoMateria', 'Título', 'Data', 
                 'Autor', 'Status', 'URL', 'Palavras-chave', 'Palavras-chave Correspondidas'
             ])
-
+    
     def _enrich_with_keywords(self, df: pd.DataFrame) -> None:
         """
         Enriquece o DataFrame de resultados com palavras-chave buscando detalhes adicionais.
@@ -697,11 +735,13 @@ class SenadoAPI:
                 
                 # Garantir que seja uma lista
                 if not isinstance(materias, list):
-                    materias = [materias]
+                    materias = [materias] if materias else []
                 
                 # Extrair dados relevantes
                 processed_data = []
                 for materia in materias:
+                    if not materia:
+                        continue
                     # Extrair sigla, número e ano do IdentificacaoMateria
                     identificacao = materia.get('IdentificacaoMateria', {})
                     sigla = identificacao.get('SiglaSubtipoMateria', '')
@@ -742,7 +782,7 @@ class SenadoAPI:
         """
         try:
             # Primeiro, tentar pegar do DadosBasicosMateria
-            autor_basico = materia.get('DadosBasicosMateria', {}).get('NomeAutor', '')
+            autor_basico = materia.get('DadosBasicosMateria', {}).get('Autor', '')
             if autor_basico:
                 return autor_basico
             
@@ -753,11 +793,13 @@ class SenadoAPI:
                 
                 # Garantir que seja uma lista
                 if not isinstance(autores, list):
-                    autores = [autores]
+                    autores = [autores] if autores else []
                 
                 # Extrair nomes dos autores
                 nomes_autores = []
                 for autor in autores:
+                    if not autor:
+                        continue
                     nome = autor.get('NomeAutor', '')
                     if nome:
                         nomes_autores.append(nome)
@@ -839,106 +881,106 @@ class SenadoAPI:
         else:
             return f"https://www25.senado.leg.br/web/atividade/materias/-/materia/busca?b_pesquisaMaterias=proposicao_PL_Projeto+de+Lei_{numero}_{ano}"
     
-    def _extract_autoria_details(self, pl_details: Dict) -> List[Dict]:
+    def get_additional_pl_details(self, sigla: str, numero: str, ano: str) -> Dict[str, Any]:
         """
-        Extrai detalhes de autoria de um PL.
+        Versão aprimorada do get_pl_by_id que processa dados adicionais para análise de risco.
         
         Args:
-            pl_details: Detalhes do PL
-            
-        Returns:
-            Lista com informações dos autores
-        """
-        autores = []
-        autor_principal = pl_details.get('Autor', '')
-        
-        if autor_principal:
-            # Tentar extrair partido/UF do nome do autor (formato comum: "Nome (Partido/UF)")
-            import re
-            partido_uf_match = re.search(r'\((.*?)\)', autor_principal)
-            if partido_uf_match:
-                partido_uf = partido_uf_match.group(1)
-                # Tentar separar partido e UF
-                if '/' in partido_uf:
-                    partido, uf = partido_uf.split('/')
-                else:
-                    partido, uf = partido_uf, ""
-                    
-                # Limpar nome do autor (remover partido/UF)
-                nome = autor_principal.replace(f"({partido_uf})", "").strip()
-            else:
-                nome = autor_principal
-                partido, uf = "", ""
-            
-            # Determinar tipo de autor
-            tipo = "Parlamentar"  # Tipo padrão
-            if "Senador" in nome or "Senadora" in nome:
-                tipo = "Parlamentar"
-            elif "Executivo" in nome or "Presidente" in nome:
-                tipo = "Poder Executivo"
-            elif "Comissão" in nome:
-                tipo = "Comissão"
-            
-            autores.append({
-                "nome": nome,
-                "tipo": tipo,
-                "partido": partido,
-                "uf": uf
-            })
-        
-        return autores
-
-    def _find_related_projects(self, sigla: str, numero: str, ano: str) -> List[Dict]:
-        """
-        Busca projetos de lei relacionados com o PL atual.
-        
-        Args:
-            sigla: Sigla do PL 
+            sigla: Sigla do PL (ex: PL, PEC)
             numero: Número do PL
             ano: Ano do PL
             
         Returns:
-            Lista de projetos relacionados
+            Dicionário com detalhes processados do PL para análise de risco
         """
-        # Implementação simplificada - em produção isso usaria
-        # algoritmos de similaridade, palavras-chave comuns, etc.
-        try:
-            # Buscar PLs recentes para simular relacionados
-            related_pls = self.get_recent_pls(limit=5)
-            
-            # Filtrar o próprio PL
-            current_id = f"{sigla} {numero}/{ano}"
-            related_pls = [pl for pl in related_pls if pl.get('ID') != current_id]
-            
-            # Limitar a 2-3 projetos relacionados
-            return related_pls[:3]
-        except Exception as e:
-            logger.error(f"Erro ao buscar projetos relacionados: {str(e)}")
-            return []
-
-# Testes básicos
-if __name__ == "__main__":
-    api = SenadoAPI()
-    
-    # Teste: buscar PL específico
-    pl = api.get_pl_by_id("PL", "2234", "2022")
-    print(f"Detalhes do PL 2234/2022:")
-    if pl:
-        print(f"  Título: {pl.get('Título', '')[:100]}...")
-        print(f"  Autor: {pl.get('Autor', '')}")
-        print(f"  Status: {pl.get('Status', '')}")
-        print(f"  URL: {pl.get('URL', '')}")
+        logger.info(f"Obtendo detalhes adicionais do PL {sigla} {numero}/{ano}")
         
-        # Verificar se tem relatores
-        if 'Relatores' in pl:
-            print("\nRelatores:")
-            for relator in pl['Relatores']:
-                print(f"  {relator.get('Nome', '')} ({relator.get('Partido', '')}/{relator.get('UF', '')}) - {relator.get('Comissao', '')}")
-    else:
-        print("PL não encontrado")
-    
-    # Teste: buscar por palavras-chave
-    print("\nBusca por 'apostas':")
-    results = api.search_pls(keywords=["apostas"], limit=5)
-    for i, res in enumerate(results):
-        print(f"{i+1}. {res['ID']}: {res['Título'][:100]}...")
+        # Obter dados básicos primeiro
+        basic_details = self.get_pl_by_id(sigla, numero, ano)
+        if not basic_details:
+            return {}
+        
+        # Buscar detalhes adicionais para enriquecer a análise
+        try:
+            # Adicionar dados de autoria detalhada
+            autoria_detalhada = []
+            autor = basic_details.get('Autor', '')
+            
+            # Extrair partido/UF se disponível no formato "Nome (Partido/UF)"
+            if isinstance(autor, str):
+                partido_uf_match = re.search(r'\((.*?)\)', autor)
+                if partido_uf_match:
+                    partido_uf = partido_uf_match.group(1)
+                    
+                    # Tentar separar partido e UF
+                    if '/' in partido_uf:
+                        partido, uf = partido_uf.split('/')
+                    else:
+                        partido, uf = partido_uf, ""
+                    
+                    # Limpar nome do autor (remover partido/UF)
+                    nome = autor.replace(f"({partido_uf})", "").strip()
+                else:
+                    nome = autor
+                    partido, uf = "", ""
+                
+                # Determinar tipo de autor
+                tipo_autor = "Outro"
+                if "Senador" in nome or "Senadora" in nome:
+                    tipo_autor = "Parlamentar"
+                elif "Executivo" in nome or "Presidente" in nome:
+                    tipo_autor = "Poder Executivo"
+                elif "Comissão" in nome:
+                    tipo_autor = "Comissão"
+            else:
+                nome = "Não informado"
+                partido, uf, tipo_autor = "", "", "Outro"
+            
+            autoria_detalhada.append({
+                "nome": nome,
+                "tipo": tipo_autor,
+                "partido": partido,
+                "uf": uf
+            })
+            
+            # Procurar PLs relacionados (mesmos temas ou autores)
+            projetos_relacionados = []
+            if basic_details.get('Palavras-chave'):
+                try:
+                    keywords = basic_details.get('Palavras-chave', '').split(',')
+                    keywords = [k.strip() for k in keywords if k.strip()]
+                    
+                    # Usar apenas as primeiras 3 keywords para busca, se disponíveis
+                    search_keywords = keywords[:3] if len(keywords) >= 3 else keywords
+                    
+                    # Buscar por palavras-chave
+                    if search_keywords:
+                        try:
+                            related_results = self.search_pls(keywords=search_keywords, limit=3)
+                            
+                            # Filtrar para não incluir o próprio PL
+                            pl_id = f"{sigla} {numero}/{ano}"
+                            related_results = [r for r in related_results if r.get('ID') != pl_id]
+                            
+                            # Limitar a 2 resultados relacionados
+                            projetos_relacionados.extend(related_results[:2] if len(related_results) >= 2 else related_results)
+                        except Exception as e:
+                            logger.error(f"Erro ao buscar PLs relacionados: {str(e)}")
+                except Exception as e:
+                    logger.error(f"Erro ao processar palavras-chave para busca: {str(e)}")
+            
+            # Adicionar detalhes adicionais ao resultado
+            basic_details['detalhes_adicionais'] = {
+                "autoria_detalhada": autoria_detalhada,
+                "projetos_relacionados": projetos_relacionados
+            }
+            
+            # Adicionar data de tramitação detalhada se disponível
+            if "Tramitacao" in basic_details:
+                basic_details["Tramitacao_Detalhada"] = basic_details["Tramitacao"]
+            
+            return basic_details
+            
+        except Exception as e:
+            logger.error(f"Erro ao obter detalhes adicionais do PL {sigla} {numero}/{ano}: {str(e)}")
+            return basic_details  # Retorna detalhes básicos em caso de erro
