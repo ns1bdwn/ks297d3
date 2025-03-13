@@ -2,7 +2,7 @@
 <DetalheMateria xmlns:xsi='http://www.w3.org/2001/XMLSchema-instance'
     xsi:noNamespaceSchemaLocation='https://legis.senado.leg.br/dadosabertos/dados/DetalheMateriav7.xsd'>
     <Metadados>
-    <Versao>13/03/2025 11:08:41</Versao>
+    <Versao>13/03/2025 16:13:38</Versao>
     <VersaoServico>7</VersaoServico>
     <DataVersaoServico>2021-09-14</DataVersaoServico>
     <DescricaoDataSet>Detalhes da matéria.</DescricaoDataSet>

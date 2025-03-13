@@ -108,8 +108,8 @@ class PLRiskAnalyzer:
                 except Exception as e:
                     logger.error(f"Erro ao carregar análise do disco para {pl_id}: {str(e)}")
         
-        # CORREÇÃO: Usar o método correto get_pl_by_id em vez de get_additional_pl_details
-        pl_details = self.senado_api.get_pl_by_id(sigla, numero, ano)
+        # Buscar dados detalhados do PL usando a API real do Senado
+        pl_details = self.senado_api.get_additional_pl_details(sigla, numero, ano)
         
         if not pl_details:
             logger.warning(f"PL {sigla} {numero}/{ano} não encontrado na API do Senado")
@@ -119,27 +119,9 @@ class PLRiskAnalyzer:
                 "error": "PL não encontrado na API do Senado"
             }
         
-        # CORREÇÃO: Enriquecer dados com informações adicionais
-        if pl_details:
-            try:
-                # Obter código da matéria se disponível
-                codigo_materia = pl_details.get('CodigoMateria')
-                
-                # Buscar tramitação detalhada se não tiver
-                if 'Tramitacao' not in pl_details or not pl_details['Tramitacao']:
-                    tramitacao = self.senado_api.get_pl_tramitacao(sigla, numero, ano, codigo_materia)
-                    pl_details['Tramitacao'] = tramitacao
-                    
-                # Buscar relatores se tiver código da matéria
-                if codigo_materia and ('Relatores' not in pl_details or not pl_details.get('Relatores')):
-                    relatores = self.senado_api.get_pl_relatores(codigo_materia)
-                    pl_details['Relatores'] = relatores
-            except Exception as e:
-                logger.warning(f"Erro ao enriquecer dados do PL: {str(e)}")
-        
         # Extrair informações relevantes
         situacao = pl_details.get('Situacao', {})
-        tramitacao = pl_details.get('Tramitacao', [])
+        tramitacao = pl_details.get('Tramitacao_Detalhada', [])
         
         # Realizar análise contextual
         contexto_ai = self._analyze_context_with_ai(pl_details, situacao, tramitacao)
@@ -168,6 +150,27 @@ class PLRiskAnalyzer:
         
         # Calcular tempo estimado para aprovação
         time_estimate, time_factors = self._estimate_approval_time(pl_details, situacao, tramitacao)
+        
+        # Ajustar estimativa baseada na análise contextual
+        if contexto_ai["urgencia"] == "Alta":
+            # Reduzir tempo estimado
+            if "meses" in time_estimate:
+                parts = time_estimate.split("-")
+                if len(parts) == 2:
+                    try:
+                        min_months = int(parts[0])
+                        max_months = int(parts[1].replace(" meses", ""))
+                        time_estimate = f"{max(1, min_months-2)}-{max(3, max_months-3)} meses"
+                    except ValueError:
+                        pass
+            
+            # Adicionar fator explicativo
+            time_factors.append({
+                "fator": "Urgência Legislativa",
+                "descricao": "PL com sinais de tramitação prioritária",
+                "impacto": "Redução significativa no tempo esperado",
+                "explicacao": "Projetos com urgência têm prazos reduzidos em todas as etapas"
+            })
         
         # Calcular próximos passos prováveis com análise aprimorada
         next_steps = self._predict_next_steps(pl_details, situacao, tramitacao)
@@ -296,63 +299,50 @@ class PLRiskAnalyzer:
     def _analyze_context_with_ai(self, pl_details, situacao, tramitacao):
         """
         Utiliza análise baseada em regras para análise contextual do PL.
+        
+        Args:
+            pl_details: Detalhes do PL
+            situacao: Situação atual
+            tramitacao: Histórico de tramitação
+            
+        Returns:
+            Dicionário com análise contextual
         """
         try:
-            # Preparar o texto para análise com verificações de tipo
-            titulo = str(pl_details.get('Título', '')) if pl_details.get('Título') is not None else ''
-            keywords = str(pl_details.get('Palavras-chave', '')) if pl_details.get('Palavras-chave') is not None else ''
+            # Para a versão inicial, usaremos abordagem baseada em regras
+            # Em versões futuras, isso será substituído por análise com modelos BERT
             
-            # Construir status_atual de forma segura
-            status_atual = ""
-            if isinstance(situacao, dict):
-                situacao_str = str(situacao.get('Situacao', '')) if situacao.get('Situacao') is not None else ''
-                local_str = str(situacao.get('Local', '')) if situacao.get('Local') is not None else ''
-                status_atual = f"{situacao_str} {local_str}"
+            # Preparar o texto para análise
+            titulo = pl_details.get('Título', '')
+            keywords = pl_details.get('Palavras-chave', '')
+            status_atual = situacao.get('Situacao', '') + " " + situacao.get('Local', '')
             
-            # Concatenar eventos de tramitação de forma segura
+            # Concatenar eventos de tramitação recentes
             eventos_texto = ""
-            if isinstance(tramitacao, list):
-                # Limitar a 5 eventos e garantir que são dicionários
-                eventos_seguros = []
-                for i in range(min(5, len(tramitacao))):
-                    if isinstance(tramitacao[i], dict):
-                        eventos_seguros.append(tramitacao[i])
-                        
-                for evento in eventos_seguros:
-                    data = str(evento.get('Data', '')) if evento.get('Data') is not None else ''
-                    local = str(evento.get('Local', '')) if evento.get('Local') is not None else ''
-                    situacao_evt = str(evento.get('Situacao', '')) if evento.get('Situacao') is not None else ''
-                    texto = str(evento.get('Texto', '')) if evento.get('Texto') is not None else ''
-                    
-                    eventos_texto += f"{data} - {local} - {situacao_evt}: {texto}\n"
+            for evento in tramitacao[:5]:  # Apenas os 5 eventos mais recentes
+                data = evento.get('Data', '')
+                local = evento.get('Local', '')
+                situacao_evt = evento.get('Situacao', '')
+                texto = evento.get('Texto', '')
+                
+                eventos_texto += f"{data} - {local} - {situacao_evt}: {texto}\n"
             
             # Texto completo para análise
             texto_completo = f"Título: {titulo}\nPalavras-chave: {keywords}\nStatus Atual: {status_atual}\nTramitação Recente:\n{eventos_texto}"
-            texto_completo_lower = texto_completo.lower()
             
             # Análise de urgência e prioridade
             urgencia_keywords = ["urgência", "prioridade", "relevante", "imediato", "emergencial"]
             controversia_keywords = ["polêmico", "controverso", "divergência", "debate", "discordância", "crítica"]
             
-            urgencia_score = 0
-            for kw in urgencia_keywords:
-                if kw in texto_completo_lower:
-                    urgencia_score += 1
-                    
-            controversia_score = 0
-            for kw in controversia_keywords:
-                if kw in texto_completo_lower:
-                    controversia_score += 1
+            urgencia_score = sum(1 for kw in urgencia_keywords if kw in texto_completo.lower())
+            controversia_score = sum(1 for kw in controversia_keywords if kw in texto_completo.lower())
             
-            # Identificar se há relatores de forma segura
-            if 'Relatores' in pl_details and isinstance(pl_details['Relatores'], list) and pl_details['Relatores']:
+            # Identificar se há relatores (aumenta urgência)
+            if 'Relatores' in pl_details and pl_details['Relatores']:
                 urgencia_score += 1
             
-            # Verificar se está em comissão de alto poder de forma segura
-            local_atual = ""
-            if isinstance(situacao, dict) and situacao.get('Local') is not None:
-                local_atual = str(situacao.get('Local', '')).upper()
-                
+            # Verificar se está em comissão de alto poder (aumenta urgência)
+            local_atual = situacao.get('Local', '').upper()
             for committee in self.HIGH_POWER_COMMITTEES:
                 if committee in local_atual:
                     urgencia_score += 1
@@ -756,6 +746,30 @@ class PLRiskAnalyzer:
                 "explicacao": "A ausência de relatores pode indicar menor prioridade ou estágio inicial de tramitação"
             })
         
+        # Fator 6: Relevância do autor
+        autor = pl_details.get('Autor', '')
+        
+        # Verificar tipo de autor
+        autor_influente = False
+        if "Poder Executivo" in autor or "Presidente" in autor or "Ministério" in autor:
+            autor_influente = True
+            risk_score += 15
+            risk_factors.append({
+                "fator": "Relevância do autor",
+                "descricao": f"Autor: {autor}",
+                "impacto": "+15 pontos",
+                "explicacao": "PLs do Poder Executivo têm maior prioridade e chance de aprovação"
+            })
+        elif "Mesa Diretora" in autor or "Comissão" in autor:
+            autor_influente = True
+            risk_score += 10
+            risk_factors.append({
+                "fator": "Relevância do autor",
+                "descricao": f"Autor: {autor}",
+                "impacto": "+10 pontos",
+                "explicacao": "PLs de Comissões ou da Mesa Diretora têm boa chance de aprovação"
+            })
+        
         # Limitar score entre 0 e 100
         risk_score = max(0, min(100, risk_score))
         
@@ -829,6 +843,76 @@ class PLRiskAnalyzer:
                 "explicacao": "Comissões de menor influência tendem a ter tramitação mais lenta"
             })
         
+        # Ajustar com base na velocidade de tramitação
+        if len(tramitacao) >= 2:
+            try:
+                # Calcular o tempo médio entre eventos
+                dates = []
+                for event in tramitacao:
+                    if event.get('Data'):
+                        try:
+                            dates.append(datetime.strptime(event.get('Data'), "%Y-%m-%d"))
+                        except ValueError:
+                            continue
+                
+                if len(dates) >= 2:
+                    # Ordenar datas
+                    dates.sort(reverse=True)
+                    
+                    # Calcular diferenças em dias
+                    intervals = [(dates[i] - dates[i+1]).days for i in range(len(dates)-1)]
+                    avg_interval = sum(intervals) / len(intervals)
+                    
+                    if avg_interval < 15:
+                        # Tramitação rápida
+                        adjustment = "redução no tempo estimado"
+                        time_factors.append({
+                            "fator": "Velocidade de tramitação",
+                            "descricao": f"Média de {avg_interval:.1f} dias entre eventos",
+                            "impacto": adjustment,
+                            "explicacao": "Tramitação rápida indica prioridade e pode acelerar o processo"
+                        })
+                        
+                        # Ajustar estimativa
+                        if "3-6 meses" in estimate:
+                            estimate = "1-3 meses"
+                        elif "6-12 meses" in estimate:
+                            estimate = "3-6 meses"
+                        elif "6-18 meses" in estimate:
+                            estimate = "4-12 meses"
+                        elif "12-24 meses" in estimate:
+                            estimate = "6-18 meses"
+                        
+                    elif avg_interval > 60:
+                        # Tramitação lenta
+                        adjustment = "aumento no tempo estimado"
+                        time_factors.append({
+                            "fator": "Velocidade de tramitação",
+                            "descricao": f"Média de {avg_interval:.1f} dias entre eventos",
+                            "impacto": adjustment,
+                            "explicacao": "Tramitação lenta indica baixa prioridade e pode estender o processo"
+                        })
+                        
+                        # Ajustar estimativa
+                        if "3-6 meses" in estimate:
+                            estimate = "6-12 meses"
+                        elif "6-12 meses" in estimate:
+                            estimate = "12-24 meses"
+                        elif "6-18 meses" in estimate:
+                            estimate = "12-30 meses"
+                        elif "12-24 meses" in estimate:
+                            estimate = "18-36 meses"
+                    else:
+                        # Tramitação média, mantém estimativa
+                        time_factors.append({
+                            "fator": "Velocidade de tramitação",
+                            "descricao": f"Média de {avg_interval:.1f} dias entre eventos",
+                            "impacto": "Neutro",
+                            "explicacao": "Velocidade de tramitação normal"
+                        })
+            except Exception as e:
+                logger.warning(f"Erro ao calcular velocidade de tramitação: {str(e)}")
+        
         # Verificar se tem relatores (acelera o processo)
         tem_relator = 'Relatores' in pl_details and len(pl_details['Relatores']) > 0
         if tem_relator:
@@ -850,6 +934,34 @@ class PLRiskAnalyzer:
                     except ValueError:
                         pass
         
+        # Última movimentação
+        if tramitacao and tramitacao[0].get('Data'):
+            try:
+                last_event_date = datetime.strptime(tramitacao[0].get('Data'), "%Y-%m-%d")
+                days_since_last_event = (datetime.now() - last_event_date).days
+                
+                if days_since_last_event > 90:
+                    time_factors.append({
+                        "fator": "Última movimentação",
+                        "descricao": f"{days_since_last_event} dias desde o último evento",
+                        "impacto": "Possível extensão no prazo",
+                        "explicacao": "PL sem movimentação recente pode indicar estagnação"
+                    })
+                    
+                    # Se estiver parado há muito tempo, a estimativa pode ficar mais longa
+                    if days_since_last_event > 180:
+                        if "-" in estimate:
+                            parts = estimate.split("-")
+                            if len(parts) == 2:
+                                try:
+                                    min_months = int(parts[0]) + 6
+                                    max_months = int(parts[1].replace(" meses", "")) + 12
+                                    estimate = f"{min_months}-{max_months} meses"
+                                except ValueError:
+                                    pass
+            except Exception:
+                pass
+        
         return estimate, time_factors
     
     def _predict_next_steps(self, pl_details: Dict, situacao: Dict, tramitacao: List[Dict]) -> List[Dict]:
@@ -864,6 +976,21 @@ class PLRiskAnalyzer:
         Returns:
             Lista de próximos passos prováveis com probabilidades e contextualização
         """
+        # IMPORTANTE: Verifique e registre se relatores estão realmente presentes
+        tem_relator = 'Relatores' in pl_details and len(pl_details['Relatores']) > 0
+        
+        # Log detalhado para depuração
+        if 'Relatores' in pl_details:
+            logger.info(f"Relatores encontrados: {len(pl_details.get('Relatores', []))}")
+            if pl_details.get('Relatores', []):
+                for rel in pl_details['Relatores']:
+                    if isinstance(rel, dict):
+                        logger.info(f"Relator: {rel.get('Nome', '')} - {rel.get('Comissao', '')}")
+                    else:
+                        logger.info(f"Relator em formato inesperado: {type(rel)}")
+        else:
+            logger.info("Nenhum relator encontrado nos detalhes do PL")
+            
         next_steps = []
         
         # Verificar se está arquivado ou prejudicado
@@ -880,28 +1007,90 @@ class PLRiskAnalyzer:
         # Localização atual
         current_location = situacao.get('Local', '')
         
-        # Verificar se tem relatores designados
-        tem_relator = 'Relatores' in pl_details and len(pl_details['Relatores']) > 0
+        # Extrair informações de relatores
         relator_nome = ""
+        relator_comissao = ""
         if tem_relator and pl_details['Relatores']:
             relator = pl_details['Relatores'][0]
-            relator_nome = relator.get('Nome', '')
+            if isinstance(relator, dict):  # Verificar se é um dicionário
+                relator_nome = relator.get('Nome', '')
+                relator_comissao = relator.get('Comissao', '')
+            elif isinstance(relator, str):  # Se for string, usar como nome
+                relator_nome = relator
         
-        # Predizer próximos passos com base na localização atual e contexto
+        # Analisar padrões históricos na tramitação
+        tramitacao_dias = []
+        localidades = []
+        eventos_relevantes = []
+        
+        if len(tramitacao) > 1:
+            for i in range(len(tramitacao) - 1):
+                try:
+                    data_atual = datetime.strptime(tramitacao[i].get('Data', ''), "%Y-%m-%d")
+                    data_anterior = datetime.strptime(tramitacao[i+1].get('Data', ''), "%Y-%m-%d")
+                    dias = (data_atual - data_anterior).days
+                    if dias > 0:
+                        tramitacao_dias.append(dias)
+                except (ValueError, TypeError):
+                    pass
+                
+                local = tramitacao[i].get('Local', '')
+                if local:
+                    localidades.append(local)
+                
+                # Identificar eventos importantes
+                texto = tramitacao[i].get('Texto', '').lower()
+                situacao_texto = tramitacao[i].get('Situacao', '').lower()
+                
+                evento_relevante = None
+                if 'aprovad' in situacao_texto or 'aprovad' in texto:
+                    evento_relevante = "aprovação"
+                elif 'rejeitad' in situacao_texto or 'rejeitad' in texto:
+                    evento_relevante = "rejeição"
+                elif 'audiência' in situacao_texto or 'audiência' in texto:
+                    evento_relevante = "audiência pública"
+                elif 'emenda' in situacao_texto or 'emenda' in texto:
+                    evento_relevante = "emendas"
+                elif 'urgência' in situacao_texto or 'urgência' in texto:
+                    evento_relevante = "regime de urgência"
+                    
+                if evento_relevante:
+                    eventos_relevantes.append({
+                        "tipo": evento_relevante,
+                        "data": tramitacao[i].get('Data', ''),
+                        "local": tramitacao[i].get('Local', '')
+                    })
+        
+        # Calcular tempo médio de tramitação entre etapas
+        tempo_medio = sum(tramitacao_dias) / len(tramitacao_dias) if tramitacao_dias else 30  # Padrão de 30 dias
+        
+        # Verificar se o autor tem influência
+        autor = pl_details.get('Autor', '')
+        autor_influente = "Poder Executivo" in autor or "Presidente" in autor or "Mesa Diretora" in autor or "Comissão" in autor
+        
+        # ===== ALTERAÇÃO CRÍTICA: GERAR PRÓXIMOS PASSOS COM BASE NA PRESENÇA DE RELATORES =====
+        
+        # 1. Se o PL estiver em Plenário, próximos passos específicos para essa fase
         if "Plenário" in current_location:
             # Análise para PLs em Plenário
-            next_steps.append({
-                "passo": "Votação em Plenário",
-                "probabilidade": "Alta",
-                "observacao": "PL já está no Plenário, próximo passo natural é a votação",
-                "contexto": "Tempo estimado: 7-14 dias."
-            })
+            urgencia = any('urgência' in evt.get('tipo', '') for evt in eventos_relevantes)
             
             next_steps.append({
+                "passo": "Votação em Plenário",
+                "probabilidade": "Alta" if urgencia or autor_influente else "Média",
+                "observacao": "PL já está no Plenário, próximo passo natural é a votação",
+                "contexto": f"{'Em regime de urgência, o que acelera a votação. ' if urgencia else ''}"
+                          f"{'Autor tem influência política significativa, aumentando chances de priorização. ' if autor_influente else ''}"
+                          f"Tempo estimado: {max(7, int(tempo_medio/2))} dias."
+            })
+            
+            prob_aprovacao = "Alta" if urgencia and autor_influente else "Média" if urgencia or autor_influente else "Baixa"
+            next_steps.append({
                 "passo": "Aprovação no Plenário",
-                "probabilidade": "Média",
+                "probabilidade": prob_aprovacao,
                 "observacao": "Votação para aprovação do PL no plenário",
-                "contexto": "Após ser pautado, o PL será submetido à votação."
+                "contexto": f"{'Projetos em urgência têm maior taxa de aprovação. ' if urgencia else ''}"
+                          f"{'A autoria/apoio político aumenta chances de aprovação. ' if autor_influente else ''}"
             })
             
             next_steps.append({
@@ -910,22 +1099,29 @@ class PLRiskAnalyzer:
                 "observacao": "Se aprovado, seguirá para próxima fase do processo legislativo",
                 "contexto": "Após aprovação, o PL seguirá para a Câmara (se originário do Senado) ou para sanção/promulgação (se já aprovado na Câmara)."
             })
-        
-        elif "CCJ" in current_location or "Constituição e Justiça" in current_location:
-            # Análise para PLs na CCJ
+            
+        # 2. Se o PL estiver na CCJ com relatores designados
+        elif ("CCJ" in current_location or "Constituição e Justiça" in current_location) and tem_relator:
             next_steps.append({
-                "passo": "Designação de Relator" if not tem_relator else "Emissão de Parecer pelo Relator",
+                "passo": "Emissão de Parecer pelo Relator",
                 "probabilidade": "Alta",
-                "observacao": f"Relator: {'Já designado - ' + relator_nome if tem_relator else 'Pendente'}",
-                "contexto": f"{'Relator já designado: ' + relator_nome + '. ' if tem_relator else 'Aguardando designação de relator. '}"
-                          f"Na CCJ, o tempo médio para emissão de parecer é de aproximadamente 30 dias."
+                "observacao": f"Relator: {relator_nome}",
+                "contexto": f"Relator já designado: {relator_nome}. "
+                          f"Na CCJ, o tempo médio para emissão de parecer é de aproximadamente {int(tempo_medio*1.2)} dias."
             })
             
+            # Verificar histórico de PLs semelhantes na CCJ
+            aprovacoes_ccj = [evt for evt in eventos_relevantes if evt.get('tipo') == "aprovação" and "CCJ" in evt.get('local', '')]
+            rejeicoes_ccj = [evt for evt in eventos_relevantes if evt.get('tipo') == "rejeição" and "CCJ" in evt.get('local', '')]
+            
+            taxa_aprovacao = "Alta" if len(aprovacoes_ccj) > len(rejeicoes_ccj) else "Média" if len(aprovacoes_ccj) == len(rejeicoes_ccj) else "Baixa"
             next_steps.append({
                 "passo": "Votação na CCJ",
-                "probabilidade": "Alta" if tem_relator else "Média",
+                "probabilidade": taxa_aprovacao,
                 "observacao": "Após parecer, o projeto será votado na comissão",
-                "contexto": f"{'Com relator já designado, o processo tende a ser mais rápido. ' if tem_relator else ''}"
+                "contexto": f"{'Projetos similares tiveram boa taxa de aprovação na CCJ. ' if taxa_aprovacao == 'Alta' else ''}"
+                          f"{'Projetos similares tiveram baixa taxa de aprovação na CCJ. ' if taxa_aprovacao == 'Baixa' else ''}"
+                          f"{'A influência política do autor pode acelerar este processo. ' if autor_influente else ''}"
             })
             
             next_steps.append({
@@ -934,53 +1130,137 @@ class PLRiskAnalyzer:
                 "observacao": "Após a CCJ, o projeto segue para outras comissões pertinentes",
                 "contexto": f"A CCJ é uma etapa determinante. PLs aprovados na CCJ têm maior chance de aprovação nas comissões subsequentes."
             })
-        
-        elif "Comissão" in current_location:
-            # Análise para PLs em outras comissões
+            
+        # 3. Se o PL estiver na CCJ sem relatores designados
+        elif "CCJ" in current_location or "Constituição e Justiça" in current_location:
             next_steps.append({
-                "passo": "Designação de Relator" if not tem_relator else "Emissão de Parecer pelo Relator",
+                "passo": "Designação de Relator", 
                 "probabilidade": "Alta",
-                "observacao": f"Relator: {'Já designado - ' + relator_nome if tem_relator else 'Pendente'}",
-                "contexto": f"{'Relator já designado: ' + relator_nome + '. ' if tem_relator else 'Aguardando designação de relator. '}"
-                          f"O tempo médio para emissão de parecer é de aproximadamente 30 dias."
+                "observacao": "Designação de relator para analisar o PL na CCJ",
+                "contexto": f"A designação de relator é fundamental para o andamento do PL e geralmente ocorre em até 15 dias após a distribuição."
+            })
+            
+            # Verificar histórico de PLs semelhantes na CCJ
+            aprovacoes_ccj = [evt for evt in eventos_relevantes if evt.get('tipo') == "aprovação" and "CCJ" in evt.get('local', '')]
+            rejeicoes_ccj = [evt for evt in eventos_relevantes if evt.get('tipo') == "rejeição" and "CCJ" in evt.get('local', '')]
+            
+            taxa_aprovacao = "Alta" if len(aprovacoes_ccj) > len(rejeicoes_ccj) else "Média" if len(aprovacoes_ccj) == len(rejeicoes_ccj) else "Baixa"
+            next_steps.append({
+                "passo": "Votação na CCJ",
+                "probabilidade": "Média",
+                "observacao": "Após parecer, o projeto será votado na comissão",
+                "contexto": f"{'Projetos similares tiveram boa taxa de aprovação na CCJ. ' if taxa_aprovacao == 'Alta' else ''}"
+                          f"{'Projetos similares tiveram baixa taxa de aprovação na CCJ. ' if taxa_aprovacao == 'Baixa' else ''}"
+                          f"{'A influência política do autor pode acelerar este processo. ' if autor_influente else ''}"
+            })
+            
+            next_steps.append({
+                "passo": "Encaminhamento para outras comissões",
+                "probabilidade": "Baixa",
+                "observacao": "Após a CCJ, o projeto segue para outras comissões pertinentes",
+                "contexto": f"A CCJ é uma etapa determinante. PLs aprovados na CCJ têm maior chance de aprovação nas comissões subsequentes."
+            })
+            
+        # 4. Se o PL estiver em outra comissão com relatores designados
+        elif "Comissão" in current_location and tem_relator:
+            next_steps.append({
+                "passo": "Emissão de Parecer pelo Relator",
+                "probabilidade": "Alta",
+                "observacao": f"Relator: {relator_nome}",
+                "contexto": f"Relator já designado: {relator_nome}. "
+                          f"O tempo médio para emissão de parecer nesta comissão é de aproximadamente {int(tempo_medio)} dias."
             })
             
             next_steps.append({
                 "passo": "Votação na Comissão",
-                "probabilidade": "Alta" if tem_relator else "Média",
+                "probabilidade": "Alta",
                 "observacao": "Após parecer, o projeto é votado na comissão",
-                "contexto": f"{'Com relator já designado, o processo tende a ser mais rápido. ' if tem_relator else ''}"
+                "contexto": f"Com relator já designado, o processo tende a ser mais rápido. "
+                          f"{'A influência política do autor pode acelerar este processo. ' if autor_influente else ''}"
             })
             
             next_steps.append({
                 "passo": "Realização de Audiência Pública",
-                "probabilidade": "Média",
+                "probabilidade": "Média" if any('audiência' in evt.get('tipo', '') for evt in eventos_relevantes) else "Baixa",
                 "observacao": "Possível audiência pública para debater o projeto",
-                "contexto": "Audiências públicas podem estender o tempo de tramitação em 15-30 dias."
+                "contexto": f"{'Já houve solicitações de audiências públicas no histórico de tramitação. ' if any('audiência' in evt.get('tipo', '') for evt in eventos_relevantes) else ''}"
+                          f"Audiências públicas podem estender o tempo de tramitação em 15-30 dias."
             })
-        
+            
+        # 5. Se o PL estiver em outra comissão sem relatores designados
+        elif "Comissão" in current_location:
+            next_steps.append({
+                "passo": "Designação de Relator",
+                "probabilidade": "Alta",
+                "observacao": "Designação de relator para analisar o PL",
+                "contexto": f"A designação de relator é fundamental para o andamento do PL e geralmente ocorre em até 15 dias após a distribuição."
+            })
+            
+            next_steps.append({
+                "passo": "Votação na Comissão",
+                "probabilidade": "Média",
+                "observacao": "Após parecer, o projeto é votado na comissão",
+                "contexto": f"{'A influência política do autor pode acelerar este processo. ' if autor_influente else ''}"
+            })
+            
+            next_steps.append({
+                "passo": "Realização de Audiência Pública",
+                "probabilidade": "Média" if any('audiência' in evt.get('tipo', '') for evt in eventos_relevantes) else "Baixa",
+                "observacao": "Possível audiência pública para debater o projeto",
+                "contexto": f"{'Já houve solicitações de audiências públicas no histórico de tramitação. ' if any('audiência' in evt.get('tipo', '') for evt in eventos_relevantes) else ''}"
+                          f"Audiências públicas podem estender o tempo de tramitação em 15-30 dias."
+            })
+            
+        # 6. Se o PL estiver em estágio inicial ou outro local
         else:
-            # Caso genérico ou início de tramitação
-            next_steps = [
-                {
-                    "passo": "Distribuição para Comissões",
-                    "probabilidade": "Alta",
-                    "observacao": "PL será distribuído para análise em comissões pertinentes",
-                    "contexto": "A distribuição inicial geralmente ocorre em até 15 dias após a apresentação."
-                },
-                {
-                    "passo": "Designação de Relator",
-                    "probabilidade": "Média",
-                    "observacao": "Designação de relator para analisar o PL",
-                    "contexto": "A designação de relator é fundamental para o andamento do PL e geralmente ocorre após a distribuição para comissões."
-                },
-                {
-                    "passo": "Inclusão na pauta de comissão",
-                    "probabilidade": "Baixa",
-                    "observacao": "PL pode ser incluído na pauta de votação de alguma comissão",
-                    "contexto": "O tempo médio para inclusão na pauta após designação de relator é de aproximadamente 45 dias."
-                }
-            ]
+            # Se já tiver relator designado
+            if tem_relator:
+                next_steps = [
+                    {
+                        "passo": "Distribuição para Comissões",
+                        "probabilidade": "Alta",
+                        "observacao": "PL será distribuído para análise em comissões pertinentes",
+                        "contexto": f"{'Sendo de autoria da liderança/executivo, tende a ter tramitação prioritária. ' if autor_influente else ''}"
+                                  f"A distribuição inicial geralmente ocorre em até 15 dias após a apresentação."
+                    },
+                    {
+                        "passo": "Emissão de Parecer pelo Relator",
+                        "probabilidade": "Alta",
+                        "observacao": f"Relator já designado: {relator_nome}",
+                        "contexto": f"Relator já foi designado, o que acelera o processo de análise."
+                    },
+                    {
+                        "passo": "Inclusão na pauta de comissão",
+                        "probabilidade": "Média",
+                        "observacao": "PL pode ser incluído na pauta de votação de alguma comissão",
+                        "contexto": f"{'PLs com relator já designado entram mais rapidamente na pauta. ' if tem_relator else ''}"
+                                  f"{'PLs de autoria influente tendem a entrar mais rapidamente na pauta. ' if autor_influente else ''}"
+                                  f"O tempo médio para inclusão na pauta após designação de relator é de aproximadamente 30 dias."
+                    }
+                ]
+            else:
+                next_steps = [
+                    {
+                        "passo": "Distribuição para Comissões",
+                        "probabilidade": "Alta",
+                        "observacao": "PL será distribuído para análise em comissões pertinentes",
+                        "contexto": f"{'Sendo de autoria da liderança/executivo, tende a ter tramitação prioritária. ' if autor_influente else ''}"
+                                  f"A distribuição inicial geralmente ocorre em até 15 dias após a apresentação."
+                    },
+                    {
+                        "passo": "Designação de Relator",
+                        "probabilidade": "Média",
+                        "observacao": "Designação de relator para analisar o PL",
+                        "contexto": "A designação de relator é fundamental para o andamento do PL e geralmente ocorre após a distribuição para comissões."
+                    },
+                    {
+                        "passo": "Inclusão na pauta de comissão",
+                        "probabilidade": "Baixa",
+                        "observacao": "PL pode ser incluído na pauta de votação de alguma comissão",
+                        "contexto": f"{'PLs de autoria influente tendem a entrar mais rapidamente na pauta. ' if autor_influente else ''}"
+                                  f"O tempo médio para inclusão na pauta após designação de relator é de aproximadamente 45 dias."
+                    }
+                ]
         
         return next_steps
         
@@ -1004,7 +1284,7 @@ class PLRiskAnalyzer:
             return "Alto"
         else:
             return "Muito Alto"
-
+    
     def get_sector_risk_overview(self, sector_pls: List[Dict]) -> Dict[str, Any]:
         """
         Gera uma visão geral dos riscos para um setor com base em vários PLs.
@@ -1128,3 +1408,24 @@ class PLRiskAnalyzer:
         critical_events.sort(key=lambda x: (x['risco'], 1 if x['probabilidade'] == 'Alta' else 0), reverse=True)
         
         return critical_events[:5]  # Retornar os 5 mais críticos
+
+# Testes básicos
+if __name__ == "__main__":
+    analyzer = PLRiskAnalyzer()
+    
+    # Analisar um PL específico
+    analysis = analyzer.analyze_pl_risk("PL", "2234", "2022")
+    print(f"Análise de risco do PL 2234/2022:")
+    print(f"Score de risco: {analysis['risco_aprovacao']['score']:.1f}% ({analysis['risco_aprovacao']['nivel']})")
+    print(f"Tempo estimado: {analysis['tempo_estimado']['estimativa']}")
+    print(f"Tendência política: {analysis['analise_politica']['tendencia']}")
+    
+    # Listar principais fatores de risco
+    print("\nPrincipais fatores de risco:")
+    for factor in analysis['risco_aprovacao']['fatores'][:3]:
+        print(f"- {factor['fator']}: {factor['impacto']}")
+    
+    # Listar próximos passos prováveis
+    print("\nPróximos passos prováveis:")
+    for i, step in enumerate(analysis['proximos_passos'][:3]):
+        print(f"{i+1}. {step['passo']} (Probabilidade: {step['probabilidade']})")

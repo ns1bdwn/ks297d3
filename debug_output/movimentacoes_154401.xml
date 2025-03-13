@@ -2,7 +2,7 @@
 <MovimentacaoMateria xmlns:xsi='http://www.w3.org/2001/XMLSchema-instance'
     xsi:noNamespaceSchemaLocation='https://legis.senado.leg.br/dadosabertos/dados/MovimentacaoMateriav7.xsd'>
     <Metadados>
-    <Versao>13/03/2025 10:26:01</Versao>
+    <Versao>13/03/2025 16:13:39</Versao>
     <VersaoServico>7</VersaoServico>
     <DataVersaoServico>2020-07-08</DataVersaoServico>
     <DescricaoDataSet>Informes legislativos, movimentações, despachos, prazos, ordens do dia em que constou, etc.</DescricaoDataSet>

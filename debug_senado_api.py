@@ -1,239 +1,238 @@
-# debug_senado_api.py
+#!/usr/bin/env python
 """
-Script de diagnóstico para identificar problemas na obtenção de relatores de PLs via API do Senado.
-Este script analisa em detalhes as respostas da API e salva os resultados para diagnóstico.
+DEBUG DIRETO DA API DO SENADO
+Script que acessa DIRETAMENTE a API do Senado e imprime os resultados 
+sem depender de nenhum código existente do projeto.
 """
 import requests
-import logging
-import json
-import os
 import xmltodict
+import json
+import re
 from datetime import datetime
 
-# Configuração de logging detalhado
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("debug_senado_api.log", encoding='utf-8'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger("debug_senado_api")
-
-# Configuração da API do Senado
+# Constantes
 BASE_URL = "https://legis.senado.leg.br/dadosabertos"
+OUTPUT_DIR = "debug_results"
+import os
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# Diretório para salvar arquivos de debug
-DEBUG_DIR = "debug_output"
-os.makedirs(DEBUG_DIR, exist_ok=True)
+def salvar_arquivo(nome, conteudo):
+    """Salva conteúdo em um arquivo para análise posterior"""
+    caminho = f"{OUTPUT_DIR}/{nome}"
+    with open(caminho, 'w', encoding='utf-8') as f:
+        f.write(conteudo)
+    print(f"Arquivo salvo: {caminho}")
+    return caminho
 
-def save_to_file(filename, content, is_xml=False):
-    """Salva conteúdo em um arquivo no diretório de debug."""
-    file_path = os.path.join(DEBUG_DIR, filename)
-    mode = 'w' if isinstance(content, str) else 'wb'
-    encoding = 'utf-8' if isinstance(content, str) else None
-    
-    with open(file_path, mode, encoding=encoding) as f:
-        f.write(content)
-    
-    logger.info(f"Conteúdo salvo em {file_path}")
-    return file_path
+def formatar_json(data):
+    """Formata um dicionário como JSON indentado"""
+    return json.dumps(data, indent=2, ensure_ascii=False)
 
-def debug_pl_relatores(sigla, numero, ano):
-    """
-    Depura em detalhes o processo de obtenção de relatores para um PL.
-    
-    Args:
-        sigla: Sigla do PL (ex: PL, PEC)
-        numero: Número do PL
-        ano: Ano do PL
-    """
-    pl_id = f"{sigla} {numero}/{ano}"
-    logger.info(f"==== INICIANDO DIAGNÓSTICO DETALHADO PARA {pl_id} ====")
-    
-    # ETAPA 1: Obter detalhes básicos do PL para encontrar o código da matéria
-    basic_endpoint = f"materia/{sigla}/{numero}/{ano}"
-    basic_url = f"{BASE_URL}/{basic_endpoint}"
-    
-    logger.info(f"1. Buscando dados básicos do PL na URL: {basic_url}")
+def fazer_requisicao(endpoint, params=None):
+    """Faz uma requisição à API do Senado e retorna o resultado como dicionário"""
+    url = f"{BASE_URL}/{endpoint}"
+    print(f"\n>>> Requisitando: {url}")
+    if params:
+        print(f">>> Parâmetros: {params}")
     
     try:
-        response = requests.get(basic_url)
-        
-        logger.info(f"Status code: {response.status_code}")
-        logger.info(f"Content-Type: {response.headers.get('Content-Type')}")
-        
-        # Salvar resposta XML bruta
-        xml_file = save_to_file(f"basic_{sigla}_{numero}_{ano}.xml", response.text)
+        response = requests.get(url, params=params)
+        print(f">>> Status: {response.status_code}")
+        print(f">>> Content-Type: {response.headers.get('Content-Type')}")
         
         if response.status_code == 200:
-            # Analisar XML para JSON
-            try:
-                data = xmltodict.parse(response.content)
-                # Salvar estrutura analisada para exame
-                json_file = save_to_file(f"basic_{sigla}_{numero}_{ano}.json", 
-                                         json.dumps(data, ensure_ascii=False, indent=2))
-                
-                # Extrair CodigoMateria
-                materia = data.get('DetalheMateria', {}).get('Materia', {})
-                codigo_materia = materia.get('IdentificacaoMateria', {}).get('CodigoMateria')
-                
-                if codigo_materia:
-                    logger.info(f"CodigoMateria encontrado: {codigo_materia}")
-                    
-                    # ETAPA 2: Buscar relatores usando o código da matéria
-                    relatoria_endpoint = f"materia/relatoria/{codigo_materia}"
-                    relatoria_url = f"{BASE_URL}/{relatoria_endpoint}"
-                    
-                    logger.info(f"2. Buscando relatores na URL: {relatoria_url}")
-                    
-                    rel_response = requests.get(relatoria_url)
-                    logger.info(f"Status code: {rel_response.status_code}")
-                    logger.info(f"Content-Type: {rel_response.headers.get('Content-Type')}")
-                    
-                    # Salvar resposta XML bruta de relatoria
-                    rel_xml_file = save_to_file(f"relatoria_{codigo_materia}.xml", rel_response.text)
-                    
-                    if rel_response.status_code == 200:
-                        # Analisar XML de relatoria para JSON
-                        try:
-                            rel_data = xmltodict.parse(rel_response.content)
-                            # Salvar estrutura analisada para exame
-                            rel_json_file = save_to_file(f"relatoria_{codigo_materia}.json", 
-                                                         json.dumps(rel_data, ensure_ascii=False, indent=2))
-                            
-                            # Examinar estrutura de relatoria detalhadamente
-                            relatoria = rel_data.get('RelatoriaMateria', {})
-                            logger.info(f"Chaves em RelatoriaMateria: {relatoria.keys() if relatoria else 'Nenhuma'}")
-                            
-                            materia_rel = relatoria.get('Materia', {})
-                            logger.info(f"Chaves em Materia: {materia_rel.keys() if materia_rel else 'Nenhuma'}")
-                            
-                            # Verificar vários caminhos possíveis para relatores
-                            if 'Relatoria' in materia_rel:
-                                relatoria_data = materia_rel.get('Relatoria')
-                                if isinstance(relatoria_data, list):
-                                    logger.info(f"Encontrados {len(relatoria_data)} relatores na estrutura")
-                                    for i, rel in enumerate(relatoria_data):
-                                        parlamentar = rel.get('Parlamentar', {})
-                                        comissao = rel.get('Comissao', {})
-                                        logger.info(f"Relator {i+1}: {parlamentar.get('NomeParlamentar')} ({parlamentar.get('SiglaPartidoParlamentar', '')}/{parlamentar.get('UfParlamentar', '')}) na {comissao.get('SiglaComissao', '')}")
-                                elif isinstance(relatoria_data, dict):
-                                    logger.info("Encontrado 1 relator na estrutura")
-                                    parlamentar = relatoria_data.get('Parlamentar', {})
-                                    comissao = relatoria_data.get('Comissao', {})
-                                    logger.info(f"Relator: {parlamentar.get('NomeParlamentar')} ({parlamentar.get('SiglaPartidoParlamentar', '')}/{parlamentar.get('UfParlamentar', '')}) na {comissao.get('SiglaComissao', '')}")
-                                else:
-                                    logger.warning(f"Estrutura inesperada em Relatoria: {type(relatoria_data)}")
-                                    logger.debug(f"Conteúdo: {relatoria_data}")
-                            else:
-                                logger.warning("Nenhum elemento 'Relatoria' encontrado na estrutura")
-                                
-                                # Buscar diretamente valores que mencionem relatores
-                                full_text = json.dumps(rel_data)
-                                if "relator" in full_text.lower():
-                                    logger.info("Termos relacionados a 'relator' encontrados no texto completo, mesmo sem elemento Relatoria")
-                                    # Buscar onde aparece
-                                    for line in full_text.lower().split("\n"):
-                                        if "relator" in line:
-                                            logger.info(f"Menção em: {line}")
-                        except Exception as e:
-                            logger.error(f"Erro ao analisar XML de relatoria: {e}")
-                    else:
-                        logger.error(f"Falha ao obter dados de relatoria: {rel_response.status_code}")
-                        logger.debug(f"Texto de resposta: {rel_response.text[:500]}")
-                    
-                    # ETAPA 3: Método alternativo - buscar usando endpoint de movimentações
-                    logger.info(f"3. Buscando informações nas movimentações")
-                    movimentacoes_endpoint = f"materia/movimentacoes/{codigo_materia}"
-                    movimentacoes_url = f"{BASE_URL}/{movimentacoes_endpoint}"
-                    
-                    mov_response = requests.get(movimentacoes_url)
-                    mov_xml_file = save_to_file(f"movimentacoes_{codigo_materia}.xml", mov_response.text)
-                    
-                    if mov_response.status_code == 200:
-                        try:
-                            mov_data = xmltodict.parse(mov_response.content)
-                            mov_json_file = save_to_file(f"movimentacoes_{codigo_materia}.json", 
-                                                      json.dumps(mov_data, ensure_ascii=False, indent=2))
-                            
-                            # Verificar menções a relatores nas movimentações
-                            full_text = json.dumps(mov_data).lower()
-                            if "relator" in full_text:
-                                logger.info("Termos relacionados a 'relator' encontrados nas movimentações")
-                            else:
-                                logger.info("Nenhuma menção a 'relator' nas movimentações")
-                        except Exception as e:
-                            logger.error(f"Erro ao analisar movimentações: {e}")
-                else:
-                    logger.error("CodigoMateria não encontrado nos dados básicos do PL")
-            except Exception as e:
-                logger.error(f"Erro ao analisar XML básico: {e}")
-        else:
-            logger.error(f"Falha ao obter dados básicos do PL: {response.status_code}")
-            logger.debug(f"Texto de resposta: {response.text[:500]}")
-    except Exception as e:
-        logger.error(f"Erro na requisição: {e}")
-    
-    # ETAPA 4: Investigar estrutura completa para entender o que pode estar acontecendo
-    logger.info("4. Análise estrutural da API do Senado")
-    
-    # Tentar buscar informações dos relatores usando o termo "relator" na busca
-    logger.info("Buscando PLs com termo 'relator' para verificar estrutura esperada")
-    search_url = f"{BASE_URL}/materia/pesquisa/lista"
-    search_params = {
-        "palavras": "relator designado",
-        "limit": 1
-    }
-    
-    try:
-        search_response = requests.get(search_url, params=search_params)
-        search_xml_file = save_to_file("relator_example_search.xml", search_response.text)
-        
-        if search_response.status_code == 200:
-            try:
-                search_data = xmltodict.parse(search_response.content)
-                search_json_file = save_to_file("relator_example_search.json", 
-                                           json.dumps(search_data, ensure_ascii=False, indent=2))
-                logger.info("Exemplo de busca salvo para comparação estrutural")
-            except Exception as e:
-                logger.error(f"Erro ao analisar exemplo de busca: {e}")
-    except Exception as e:
-        logger.error(f"Erro na busca de exemplo: {e}")
-    
-    logger.info(f"==== DIAGNÓSTICO CONCLUÍDO PARA {pl_id} ====")
-    logger.info(f"Todos os arquivos de diagnóstico foram salvos no diretório: {DEBUG_DIR}")
-    
-    # Resumo dos resultados
-    logger.info("\n===== RESUMO DO DIAGNÓSTICO =====")
-    logger.info(f"PL analisado: {pl_id}")
-    if 'codigo_materia' in locals() and codigo_materia:
-        logger.info(f"Código da matéria: {codigo_materia}")
-        
-        rel_encontrado = False
-        if 'relatoria_data' in locals():
-            if isinstance(relatoria_data, (list, dict)) and relatoria_data:
-                rel_encontrado = True
-                logger.info("Status: Relatores encontrados na estrutura")
+            if 'xml' in response.headers.get('Content-Type', '').lower():
+                return xmltodict.parse(response.content)
             else:
-                logger.info("Status: Estrutura de relatoria existe, mas sem relatores")
+                return response.json()
         else:
-            logger.info("Status: Estrutura de relatoria não encontrada")
+            print(f"!!! ERRO {response.status_code}: {response.text}")
+            return None
+    except Exception as e:
+        print(f"!!! EXCEÇÃO: {str(e)}")
+        return None
+
+def analisar_pl(sigla, numero, ano):
+    """Realiza uma análise completa de um PL usando a API do Senado"""
+    pl_id = f"{sigla} {numero}/{ano}"
+    print(f"\n====== ANÁLISE DIRETA DO PL {pl_id} ======")
+    
+    # PASSO 1: Obter dados básicos do PL
+    print("\n=== PASSO 1: Dados Básicos do PL ===")
+    endpoint = f"materia/{sigla}/{numero}/{ano}"
+    dados_basicos = fazer_requisicao(endpoint)
+    
+    if not dados_basicos:
+        print(f"!!! FALHA: Não foi possível obter dados básicos do {pl_id}")
+        return
+    
+    # Salvar para debug
+    salvar_arquivo(f"{sigla}_{numero}_{ano}_basicos.json", formatar_json(dados_basicos))
+    
+    # Extrair Código da Matéria
+    try:
+        materia = dados_basicos.get('DetalheMateria', {}).get('Materia', {})
+        codigo_materia = materia.get('IdentificacaoMateria', {}).get('CodigoMateria')
+        
+        if not codigo_materia:
+            print("!!! ERRO: Código da matéria não encontrado nos dados básicos")
+            return
             
-        logger.info("Conclusão provável: " + (
-            "Este PL tem relatores designados" if rel_encontrado else 
-            "Este PL não possui relatores designados no sistema do Senado"
-        ))
+        print(f">>> Código da matéria: {codigo_materia}")
+        
+        # Extrair outros dados úteis
+        titulo = materia.get('DadosBasicosMateria', {}).get('EmentaMateria', '')
+        print(f">>> Título: {titulo[:100]}...")
+        
+        autor = materia.get('Autoria', {}).get('Autor', {}).get('NomeAutor', '') if isinstance(materia.get('Autoria', {}).get('Autor', {}), dict) else "Múltiplos autores"
+        print(f">>> Autor: {autor}")
+        
+    except Exception as e:
+        print(f"!!! ERRO ao processar dados básicos: {str(e)}")
+        return
+    
+    # PASSO 2: Tentar encontrar relatores na API via endpoint "relatoria"
+    print("\n=== PASSO 2: Tentativa com endpoint 'relatoria' ===")
+    endpoint_relatoria = f"materia/relatoria/{codigo_materia}"
+    dados_relatoria = fazer_requisicao(endpoint_relatoria)
+    
+    if dados_relatoria:
+        salvar_arquivo(f"{sigla}_{numero}_{ano}_relatoria.json", formatar_json(dados_relatoria))
+        print(">>> Dados de relatoria obtidos (verificar arquivo salvo)")
     else:
-        logger.info("Status: Não foi possível obter o código da matéria")
-        logger.info("Conclusão: Erro na obtenção dos dados básicos do PL")
+        print("!!! Endpoint 'relatoria' falhou ou não existe")
+    
+    # PASSO 3: Obter movimentações (este é o caminho correto segundo a documentação)
+    print("\n=== PASSO 3: Obtendo movimentações (método recomendado) ===")
+    endpoint_movimentacoes = f"materia/movimentacoes/{codigo_materia}"
+    dados_movimentacoes = fazer_requisicao(endpoint_movimentacoes)
+    
+    if not dados_movimentacoes:
+        print("!!! FALHA: Não foi possível obter movimentações")
+        return
+        
+    salvar_arquivo(f"{sigla}_{numero}_{ano}_movimentacoes.json", formatar_json(dados_movimentacoes))
+    
+    # Extrair e processar movimentações
+    try:
+        movimentacoes = dados_movimentacoes.get('MovimentacaoMateria', {}).get('Movimentacoes', {}).get('Movimentacao', [])
+        
+        # Garantir que seja uma lista
+        if not isinstance(movimentacoes, list):
+            movimentacoes = [movimentacoes]
+            
+        print(f">>> Encontradas {len(movimentacoes)} movimentações")
+        
+        # Procurar menções a relatores nas movimentações
+        encontrou_relator = False
+        relatores_encontrados = []
+        
+        for i, evento in enumerate(movimentacoes):
+            texto = evento.get('TextoMovimentacao', '').lower()
+            data = evento.get('DataMovimentacao', '')
+            local = evento.get('Local', {}).get('NomeLocal', '')
+            
+            if 'relator' in texto:
+                print(f"\n>>> MENÇÃO A RELATOR na movimentação {i+1} ({data}):")
+                print(f">>> Local: {local}")
+                print(f">>> Texto: {texto[:150]}...")
+                encontrou_relator = True
+                
+                # Tentar extrair nome do relator com regex
+                padroes = [
+                    r"[Dd]esignad[oa] [Rr]elator[,]?\s+[oa]?\s+[Ss]enador[a]?\s+([A-ZÀ-Ú][a-zà-ú]+(?: [A-ZÀ-Ú][a-zà-ú]+)*)",
+                    r"[Dd]esignad[oa] [Rr]elator[,]?\s+[Ss]en[.]?\s+([A-ZÀ-Ú][a-zà-ú]+(?: [A-ZÀ-Ú][a-zà-ú]+)*)",
+                    r"[Rr]elator[:]?\s+[Ss]enador[a]?\s+([A-ZÀ-Ú][a-zà-ú]+(?: [A-ZÀ-Ú][a-zà-ú]+)*)",
+                    r"[Rr]elator[:]?\s+[Ss]en[.]?\s+([A-ZÀ-Ú][a-zà-ú]+(?: [A-ZÀ-Ú][a-zà-ú]+)*)",
+                    r"[Ss]enador[a]?\s+([A-ZÀ-Ú][a-zà-ú]+(?: [A-ZÀ-Ú][a-zà-ú]+)*)\s+(?:para|como)\s+relator"
+                ]
+                
+                nome_relator = None
+                for padrao in padroes:
+                    match = re.search(padrao, texto)
+                    if match:
+                        nome_relator = match.group(1)
+                        break
+                
+                if nome_relator:
+                    print(f">>> EXTRAÍDO: Nome do relator = {nome_relator}")
+                    
+                    # Extrair partido/UF se disponível
+                    partido_uf_pattern = r"\(([A-Z]+)[\/\-]([A-Z]{2})\)"
+                    partido_uf_match = re.search(partido_uf_pattern, texto)
+                    
+                    partido = ""
+                    uf = ""
+                    if partido_uf_match:
+                        partido = partido_uf_match.group(1)
+                        uf = partido_uf_match.group(2)
+                        print(f">>> EXTRAÍDO: Partido/UF = {partido}/{uf}")
+                    
+                    relator_info = {
+                        "Nome": nome_relator,
+                        "Partido": partido,
+                        "UF": uf,
+                        "Comissao": local,
+                        "DataDesignacao": data,
+                        "Fonte": "Extraído da movimentação"
+                    }
+                    
+                    relatores_encontrados.append(relator_info)
+        
+        if not encontrou_relator:
+            print("!!! Nenhuma menção a relator encontrada nas movimentações")
+        else:
+            print(f"\n>>> RESULTADO: {len(relatores_encontrados)} relatores extraídos das movimentações")
+            for i, rel in enumerate(relatores_encontrados):
+                print(f"\n>>> Relator {i+1}: {rel['Nome']}")
+                print(f">>> Partido/UF: {rel['Partido']}/{rel['UF'] if rel['Partido'] and rel['UF'] else 'Não disponível'}")
+                print(f">>> Comissão: {rel['Comissao']}")
+                print(f">>> Data: {rel['DataDesignacao']}")
+            
+            # Salvar relatores encontrados
+            salvar_arquivo(f"{sigla}_{numero}_{ano}_relatores.json", formatar_json(relatores_encontrados))
+            
+    except Exception as e:
+        print(f"!!! ERRO ao processar movimentações: {str(e)}")
+    
+    # PASSO 4: Obter situação atual
+    print("\n=== PASSO 4: Situação Atual ===")
+    endpoint_situacao = f"materia/situacaoatual/{codigo_materia}"
+    dados_situacao = fazer_requisicao(endpoint_situacao)
+    
+    if dados_situacao:
+        salvar_arquivo(f"{sigla}_{numero}_{ano}_situacao.json", formatar_json(dados_situacao))
+        
+        try:
+            situacao = dados_situacao.get('SituacaoAtualMateria', {}).get('Materia', {})
+            local = situacao.get('Local', {}).get('NomeLocal', '')
+            status = situacao.get('Situacao', {}).get('DescricaoSituacao', '')
+            
+            print(f">>> Local atual: {local}")
+            print(f">>> Status: {status}")
+        except Exception as e:
+            print(f"!!! ERRO ao processar situação: {str(e)}")
+    
+    print("\n====== ANÁLISE CONCLUÍDA ======")
+    print(f"Todos os resultados foram salvos em arquivos no diretório: {OUTPUT_DIR}")
+    
+    # RESUMO FINAL
+    print("\n=== RESUMO DA ANÁLISE ===")
+    print(f"PL: {pl_id}")
+    print(f"Título: {titulo[:100]}...")
+    print(f"Autor: {autor}")
+    print(f"Código: {codigo_materia}")
+    
+    if relatores_encontrados:
+        print(f"Relatores encontrados: {len(relatores_encontrados)}")
+        for rel in relatores_encontrados:
+            print(f" - {rel['Nome']} ({rel['Partido']}/{rel['UF']})")
+    else:
+        print("Relatores: Nenhum relator encontrado")
 
 if __name__ == "__main__":
-    # Executar diagnóstico para o PL 3405/2023
-    debug_pl_relatores("PL", "3405", "2023")
+    # Analisar o PL 3405/2023
+    analisar_pl("PL", "3405", "2023")
     
-    # Também vamos testar com um PL que sabemos que tem relatores
-    # para fins de comparação da estrutura
-    logger.info("\n\n==== TESTE DE COMPARAÇÃO ====")
-    debug_pl_relatores("PL", "2234", "2022")
+    # Se quiser analisar outro PL para comparação, descomente a linha abaixo
+    # analisar_pl("PL", "2234", "2022")
