@@ -1212,7 +1212,8 @@ class PLRiskAnalyzer:
             })
             
         # 6. Se o PL estiver em estágio inicial ou outro local
-         else:
+        
+        else:
         # Caso genérico ou início de tramitação
         if tem_relator:
             # Se já tem relator designado, adaptar os próximos passos
@@ -1263,29 +1264,6 @@ class PLRiskAnalyzer:
                               f"O tempo médio para inclusão na pauta após designação de relator é de aproximadamente 45 dias."
                 }
             ]
-            else:
-                next_steps = [
-                    {
-                        "passo": "Distribuição para Comissões",
-                        "probabilidade": "Alta",
-                        "observacao": "PL será distribuído para análise em comissões pertinentes",
-                        "contexto": f"{'Sendo de autoria da liderança/executivo, tende a ter tramitação prioritária. ' if autor_influente else ''}"
-                                  f"A distribuição inicial geralmente ocorre em até 15 dias após a apresentação."
-                    },
-                    {
-                        "passo": "Designação de Relator",
-                        "probabilidade": "Média",
-                        "observacao": "Designação de relator para analisar o PL",
-                        "contexto": "A designação de relator é fundamental para o andamento do PL e geralmente ocorre após a distribuição para comissões."
-                    },
-                    {
-                        "passo": "Inclusão na pauta de comissão",
-                        "probabilidade": "Baixa",
-                        "observacao": "PL pode ser incluído na pauta de votação de alguma comissão",
-                        "contexto": f"{'PLs de autoria influente tendem a entrar mais rapidamente na pauta. ' if autor_influente else ''}"
-                                  f"O tempo médio para inclusão na pauta após designação de relator é de aproximadamente 45 dias."
-                    }
-                ]
         
         return next_steps
         
