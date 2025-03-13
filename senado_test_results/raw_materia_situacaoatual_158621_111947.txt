@@ -1,0 +1,13 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<SituacaoAtualMateria xmlns:xsi='http://www.w3.org/2001/XMLSchema-instance'
+    xsi:noNamespaceSchemaLocation='https://legis.senado.leg.br/dadosabertos/dados/SituacaoAtualMateriav3.xsd'>
+    <Metadados>
+    <Versao>13/03/2025 09:44:05</Versao>
+    <VersaoServico>3</VersaoServico>
+    <DataVersaoServico>2020-07-08</DataVersaoServico>
+    <DescricaoDataSet>Traz a situação e a localização atuais de uma ou mais matérias</DescricaoDataSet>
+    
+</Metadados>
+
+    <Materias><Materia><Codigo>158621</Codigo><Subtipo>PL</Subtipo><Numero>3405</Numero><Ano>2023</Ano><DescricaoObjetivoProcesso>Iniciadora</DescricaoObjetivoProcesso><DescricaoIdentificacaoMateria>PL 3405/2023</DescricaoIdentificacaoMateria><Ementa>Altera a Lei nº 13.756, de 12 de dezembro de 2018, para estabelecer proibições no tocante à publicidade no âmbito do sistema de apostas relativas a eventos reais de temática esportiva.</Ementa><Tramitando>Sim</Tramitando><SituacaoAtual><Autuacoes><Autuacao><NumeroAutuacao>1</NumeroAutuacao><Situacoes><Situacao><DataSituacao>2025-03-12</DataSituacao><CodigoSituacao>7352323</CodigoSituacao><SiglaSituacao>AGAUDPUB</SiglaSituacao><DescricaoSituacao>AGUARDANDO AUDIÊNCIA PÚBLICA</DescricaoSituacao></Situacao></Situacoes><Local><DataLocal>2023-07-10 08:14:48</DataLocal><CodigoLocal>7361423</CodigoLocal><TipoLocal>C</TipoLocal><SiglaCasaLocal>SF</SiglaCasaLocal><NomeCasaLocal>Senado Federal</NomeCasaLocal><SiglaLocal>CEsp</SiglaLocal><NomeLocal>Comissão de Esporte</NomeLocal></Local><LocalAdministrativo><DataLocal>2023-07-10 08:14:48</DataLocal><CodigoLocal>7361419</CodigoLocal><TipoLocal>A</TipoLocal><SiglaCasaLocal>SF</SiglaCasaLocal><NomeCasaLocal>Senado Federal</NomeCasaLocal><SiglaLocal>SACESPO</SiglaLocal><NomeLocal>Secretaria de apoio à comissão de esporte</NomeLocal></LocalAdministrativo></Autuacao></Autuacoes></SituacaoAtual></Materia></Materias>
+</SituacaoAtualMateria>
