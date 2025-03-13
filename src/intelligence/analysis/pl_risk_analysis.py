@@ -296,64 +296,63 @@ class PLRiskAnalyzer:
     def _analyze_context_with_ai(self, pl_details, situacao, tramitacao):
         """
         Utiliza análise baseada em regras para análise contextual do PL.
-        
-        Args:
-            pl_details: Detalhes do PL
-            situacao: Situação atual
-            tramitacao: Histórico de tramitação
-            
-        Returns:
-            Dicionário com análise contextual
         """
         try:
-            # CORREÇÃO: Análise mais específica e robusta
-            titulo = pl_details.get('Título', '')
-            keywords = pl_details.get('Palavras-chave', '')
-            autor = pl_details.get('Autor', '')
-            status_atual = situacao.get('Situacao', '') + " " + situacao.get('Local', '')
+            # Preparar o texto para análise com verificações de tipo
+            titulo = str(pl_details.get('Título', '')) if pl_details.get('Título') is not None else ''
+            keywords = str(pl_details.get('Palavras-chave', '')) if pl_details.get('Palavras-chave') is not None else ''
             
-            # Verificar setores específicos afetados
-            setores = {
-                "igaming": ["apostas", "jogo", "bet", "cassino", "loteria", "quota fixa", "gaming"],
-                "meios_pagamento": ["pagamento", "pix", "cartão", "banco", "financeiro", "transferência", "payment"],
-                "digital_assets": ["cripto", "bitcoin", "blockchain", "token", "digital", "ativo", "nft", "stablecoin"]
-            }
+            # Construir status_atual de forma segura
+            status_atual = ""
+            if isinstance(situacao, dict):
+                situacao_str = str(situacao.get('Situacao', '')) if situacao.get('Situacao') is not None else ''
+                local_str = str(situacao.get('Local', '')) if situacao.get('Local') is not None else ''
+                status_atual = f"{situacao_str} {local_str}"
             
-            texto_completo = (titulo + " " + keywords + " " + autor + " " + status_atual).lower()
-            
-            # Detectar setores específicos afetados
-            setor_detectado = None
-            for setor, termos in setores.items():
-                if any(termo in texto_completo for termo in termos):
-                    setor_detectado = setor
-                    break
-            
-            # Concatenar eventos de tramitação recentes
+            # Concatenar eventos de tramitação de forma segura
             eventos_texto = ""
-            for evento in tramitacao[:5]:  # Apenas os 5 eventos mais recentes
-                data = evento.get('Data', '')
-                local = evento.get('Local', '')
-                situacao_evt = evento.get('Situacao', '')
-                texto = evento.get('Texto', '')
-                
-                eventos_texto += f"{data} - {local} - {situacao_evt}: {texto}\n"
+            if isinstance(tramitacao, list):
+                # Limitar a 5 eventos e garantir que são dicionários
+                eventos_seguros = []
+                for i in range(min(5, len(tramitacao))):
+                    if isinstance(tramitacao[i], dict):
+                        eventos_seguros.append(tramitacao[i])
+                        
+                for evento in eventos_seguros:
+                    data = str(evento.get('Data', '')) if evento.get('Data') is not None else ''
+                    local = str(evento.get('Local', '')) if evento.get('Local') is not None else ''
+                    situacao_evt = str(evento.get('Situacao', '')) if evento.get('Situacao') is not None else ''
+                    texto = str(evento.get('Texto', '')) if evento.get('Texto') is not None else ''
+                    
+                    eventos_texto += f"{data} - {local} - {situacao_evt}: {texto}\n"
             
             # Texto completo para análise
-            texto_completo += " " + eventos_texto.lower()
+            texto_completo = f"Título: {titulo}\nPalavras-chave: {keywords}\nStatus Atual: {status_atual}\nTramitação Recente:\n{eventos_texto}"
+            texto_completo_lower = texto_completo.lower()
             
             # Análise de urgência e prioridade
             urgencia_keywords = ["urgência", "prioridade", "relevante", "imediato", "emergencial"]
             controversia_keywords = ["polêmico", "controverso", "divergência", "debate", "discordância", "crítica"]
             
-            urgencia_score = sum(1 for kw in urgencia_keywords if kw in texto_completo)
-            controversia_score = sum(1 for kw in controversia_keywords if kw in texto_completo)
+            urgencia_score = 0
+            for kw in urgencia_keywords:
+                if kw in texto_completo_lower:
+                    urgencia_score += 1
+                    
+            controversia_score = 0
+            for kw in controversia_keywords:
+                if kw in texto_completo_lower:
+                    controversia_score += 1
             
-            # Identificar se há relatores (aumenta urgência)
-            if 'Relatores' in pl_details and pl_details['Relatores']:
+            # Identificar se há relatores de forma segura
+            if 'Relatores' in pl_details and isinstance(pl_details['Relatores'], list) and pl_details['Relatores']:
                 urgencia_score += 1
             
-            # Verificar se está em comissão de alto poder (aumenta urgência)
-            local_atual = situacao.get('Local', '').upper()
+            # Verificar se está em comissão de alto poder de forma segura
+            local_atual = ""
+            if isinstance(situacao, dict) and situacao.get('Local') is not None:
+                local_atual = str(situacao.get('Local', '')).upper()
+                
             for committee in self.HIGH_POWER_COMMITTEES:
                 if committee in local_atual:
                     urgencia_score += 1
@@ -364,16 +363,15 @@ class PLRiskAnalyzer:
                 "urgencia": "Alta" if urgencia_score >= 2 else "Média" if urgencia_score == 1 else "Baixa",
                 "controversia": "Alta" if controversia_score >= 2 else "Média" if controversia_score == 1 else "Baixa",
                 "contexto_politico": self._analise_contexto_politico(pl_details),
-                "impacto_setorial": self._analise_impacto_setorial(pl_details) if setor_detectado else 
-                                   "Impacto setorial não identificado automaticamente."
+                "impacto_setorial": self._analise_impacto_setorial(pl_details)
             }
         except Exception as e:
             logger.error(f"Erro na análise contextual: {str(e)}")
             return {
                 "urgencia": "Média",
                 "controversia": "Média",
-                "contexto_politico": "Não disponível devido a erro na análise",
-                "impacto_setorial": "Não disponível devido a erro na análise"
+                "contexto_politico": "Não disponível",
+                "impacto_setorial": "Não disponível"
             }
 
     def _analise_contexto_politico(self, pl_details):
@@ -1006,3 +1004,127 @@ class PLRiskAnalyzer:
             return "Alto"
         else:
             return "Muito Alto"
+
+    def get_sector_risk_overview(self, sector_pls: List[Dict]) -> Dict[str, Any]:
+        """
+        Gera uma visão geral dos riscos para um setor com base em vários PLs.
+        
+        Args:
+            sector_pls: Lista de PLs do setor com identificadores
+            
+        Returns:
+            Visão geral dos riscos para o setor
+        """
+        # Verificar se há PLs
+        if not sector_pls:
+            return {
+                "timestamp": datetime.now().timestamp(),
+                "error": "Nenhum PL fornecido para análise"
+            }
+        
+        # Analisar cada PL
+        pl_analyses = []
+        for pl in sector_pls:
+            try:
+                sigla = pl.get('Sigla') or pl.get('sigla')
+                numero = pl.get('Numero') or pl.get('numero')
+                ano = pl.get('Ano') or pl.get('ano')
+                
+                if sigla and numero and ano:
+                    analysis = self.analyze_pl_risk(sigla, numero, ano)
+                    if analysis and 'error' not in analysis:
+                        pl_analyses.append(analysis)
+            except Exception as e:
+                logger.error(f"Erro ao analisar PL {pl}: {str(e)}")
+        
+        if not pl_analyses:
+            return {
+                "timestamp": datetime.now().timestamp(),
+                "error": "Não foi possível analisar nenhum dos PLs fornecidos"
+            }
+        
+        # Calcular estatísticas
+        risk_scores = [analysis['risco_aprovacao']['score'] for analysis in pl_analyses]
+        avg_risk = sum(risk_scores) / len(risk_scores)
+        
+        # Classificar PLs por risco
+        high_risk_pls = [a for a in pl_analyses if a['risco_aprovacao']['score'] >= 60]
+        medium_risk_pls = [a for a in pl_analyses if 40 <= a['risco_aprovacao']['score'] < 60]
+        low_risk_pls = [a for a in pl_analyses if a['risco_aprovacao']['score'] < 40]
+        
+        # Coletar contextos políticos e setoriais
+        contextos_politicos = []
+        contextos_setoriais = []
+        for analysis in pl_analyses:
+            if 'analise_politica' in analysis:
+                if 'contexto_politico' in analysis['analise_politica']:
+                    contexto = analysis['analise_politica']['contexto_politico']
+                    if contexto and contexto not in contextos_politicos and contexto != "Não disponível":
+                        contextos_politicos.append(contexto)
+                
+                if 'impacto_setorial' in analysis['analise_politica']:
+                    contexto = analysis['analise_politica']['impacto_setorial']
+                    if contexto and contexto not in contextos_setoriais and contexto != "Não disponível":
+                        contextos_setoriais.append(contexto)
+        
+        # Preparar visão geral
+        overview = {
+            "timestamp": datetime.now().timestamp(),
+            "data_atualizacao": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "numero_pls_analisados": len(pl_analyses),
+            "risco_medio": avg_risk,
+            "nivel_risco_medio": self._risk_level_name(avg_risk),
+            "distribuicao_risco": {
+                "alto_risco": len(high_risk_pls),
+                "medio_risco": len(medium_risk_pls),
+                "baixo_risco": len(low_risk_pls)
+            },
+            "pls_alto_risco": [
+                {
+                    "pl_id": pl['pl_id'],
+                    "titulo": pl['titulo'],
+                    "score": pl['risco_aprovacao']['score'],
+                    "status": pl['status_atual']['situacao']
+                } for pl in sorted(high_risk_pls, key=lambda x: x['risco_aprovacao']['score'], reverse=True)
+            ],
+            "contextos_politicos": contextos_politicos[:3],  # Limitar a 3 contextos
+            "contextos_setoriais": contextos_setoriais[:3],  # Limitar a 3 contextos
+            "proximos_eventos_criticos": self._identify_critical_events(pl_analyses)
+        }
+        
+        return overview
+    
+    def _identify_critical_events(self, pl_analyses: List[Dict]) -> List[Dict]:
+        """
+        Identifica eventos críticos nos próximos passos dos PLs.
+        
+        Args:
+            pl_analyses: Lista de análises de PLs
+            
+        Returns:
+            Lista de eventos críticos ordenados por prioridade
+        """
+        critical_events = []
+        
+        for analysis in pl_analyses:
+            # Considerar apenas PLs de alto risco
+            if analysis['risco_aprovacao']['score'] >= 60:
+                # Analisar próximos passos
+                for step in analysis['proximos_passos']:
+                    if step['probabilidade'] in ['Alta', 'Média']:
+                        # Eventos de votação são especialmente críticos
+                        if 'Votação' in step['passo'] or 'Parecer' in step['passo']:
+                            critical_events.append({
+                                "pl_id": analysis['pl_id'],
+                                "titulo": analysis['titulo'],
+                                "evento": step['passo'],
+                                "probabilidade": step['probabilidade'],
+                                "observacao": step['observacao'],
+                                "contexto": step.get('contexto', ''),
+                                "risco": analysis['risco_aprovacao']['score']
+                            })
+        
+        # Ordenar por risco (maior primeiro) e depois por probabilidade
+        critical_events.sort(key=lambda x: (x['risco'], 1 if x['probabilidade'] == 'Alta' else 0), reverse=True)
+        
+        return critical_events[:5]  # Retornar os 5 mais críticos
