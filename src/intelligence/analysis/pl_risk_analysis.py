@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Tuple
 import pandas as pd
 
-from src.intelligence.collectors.senado_api import SenadoAPI
+from src.intelligence.collectors.senado import SenadoAPI
 
 # Configuração de logging
 logging.basicConfig(
