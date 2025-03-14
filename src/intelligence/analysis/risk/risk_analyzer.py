@@ -4,6 +4,8 @@ Classe principal de análise de risco regulatório.
 import os
 import json
 import logging
+import re
+import traceback
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 
@@ -11,6 +13,7 @@ from .risk_calculators import RiskCalculator
 from .timeline_predictor import TimelinePredictor
 from .context_analyzer import ContextAnalyzer
 from ..providers.senado_provider import SenadoProvider
+from ..models.model_manager import ModelManager
 
 # Configuração de logging
 logging.basicConfig(
@@ -50,6 +53,38 @@ class PLRiskAnalyzer:
         
         # Cache de análises realizadas
         self.analysis_cache = {}
+        
+        # Inicializar gerenciador de modelos
+        self.model_manager = ModelManager()
+        
+        # Verifica disponibilidade de modelos
+        self.models_available = self._check_models_availability()
+    
+    def _check_models_availability(self) -> Dict[str, bool]:
+        """
+        Verifica quais modelos estão disponíveis para uso.
+        
+        Returns:
+            Dicionário com status de disponibilidade de cada modelo
+        """
+        models = {
+            "legal_bert": False,
+            "legal_bert_ner": False,
+            "jurisbert_sts": False,
+            "jurisbert_uncased": False,
+            "bertimbau_large": False,
+            "mt5": False
+        }
+        
+        try:
+            for model_key in models.keys():
+                models[model_key] = self.model_manager.is_available(model_key)
+            
+            logger.info(f"Status de disponibilidade de modelos: {models}")
+        except Exception as e:
+            logger.error(f"Erro ao verificar disponibilidade de modelos: {str(e)}")
+        
+        return models
     
     def analyze_pl_risk(self, sigla: str, numero: str, ano: str, 
                        force_refresh: bool = False) -> Dict[str, Any]:
@@ -94,135 +129,357 @@ class PLRiskAnalyzer:
                 except Exception as e:
                     logger.error(f"Erro ao carregar análise do disco para {pl_id}: {str(e)}")
         
-        # Buscar dados detalhados do PL
-        pl_id_info = {
-            'sigla': sigla,
-            'numero': numero,
-            'ano': ano
-        }
-        
-        pl_details = self.provider.get_pl_details(pl_id_info)
-        
-        if not pl_details:
-            logger.warning(f"PL {pl_id} não encontrado")
-            error_result = {
+        try:
+            # Buscar dados detalhados do PL
+            pl_id_info = {
+                'sigla': sigla,
+                'numero': numero,
+                'ano': ano
+            }
+            
+            pl_details = self.provider.get_pl_details(pl_id_info)
+            
+            if not pl_details:
+                logger.warning(f"PL {pl_id} não encontrado")
+                error_result = {
+                    "pl_id": pl_id,
+                    "timestamp": datetime.now().timestamp(),
+                    "data_atualizacao": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "error": "PL não encontrado"
+                }
+                return error_result
+            
+            # Log para diagnóstico dos dados recebidos
+            logger.debug(f"Dados do PL {pl_id}: {json.dumps(pl_details, indent=2)[:500]}...")
+            
+            # Extrair informações relevantes
+            situacao = pl_details.get('Situacao', {})
+            tramitacao = pl_details.get('Tramitacao_Detalhada', [])
+            
+            # Verificar se a tramitação está vazia enquanto deveria ter dados
+            if not tramitacao and 'detalhes_adicionais' in pl_details:
+                # Tentar extrair tramitação de outras fontes
+                detalhes_adicionais = pl_details.get('detalhes_adicionais', {})
+                atualizacoes_recentes = detalhes_adicionais.get('atualizacoes_recentes', [])
+                
+                # Usar atualizações recentes como tramitação se disponível
+                if atualizacoes_recentes:
+                    logger.info(f"Usando atualizações recentes como tramitação para {pl_id}")
+                    tramitacao = atualizacoes_recentes
+            
+            # Realizar análise baseada em AI se os modelos estiverem disponíveis
+            contexto_ai = self._analyze_context_with_ai(pl_details, tramitacao)
+            
+            # Calcular o risco de aprovação
+            risk_score, risk_factors = RiskCalculator.calculate_approval_risk(pl_details, situacao, tramitacao)
+            
+            # Adicionar fatores de risco baseados na análise contextual
+            if contexto_ai["urgencia"] == "Alta":
+                risk_score += 10
+                risk_factors.append({
+                    "fator": "Urgência Legislativa",
+                    "descricao": "PL com indicadores de tramitação urgente",
+                    "impacto": "+10 pontos",
+                    "explicacao": "A urgência aumenta significativamente as chances de aprovação rápida"
+                })
+            
+            if contexto_ai["controversia"] == "Alta":
+                risk_score -= 5
+                risk_factors.append({
+                    "fator": "Controvérsia",
+                    "descricao": "PL apresenta elementos controversos",
+                    "impacto": "-5 pontos",
+                    "explicacao": "Temas controversos tendem a enfrentar maior resistência e debate"
+                })
+            
+            # Calcular tempo estimado para aprovação
+            time_estimate, time_factors = TimelinePredictor.estimate_approval_time(pl_details, situacao, tramitacao)
+            
+            # Ajustar estimativa baseada na análise contextual
+            if contexto_ai["urgencia"] == "Alta":
+                # Reduzir tempo estimado
+                if "meses" in time_estimate:
+                    parts = time_estimate.split("-")
+                    if len(parts) == 2:
+                        try:
+                            min_months = int(parts[0])
+                            max_months = int(parts[1].replace(" meses", ""))
+                            time_estimate = f"{max(1, min_months-2)}-{max(3, max_months-3)} meses"
+                        except ValueError:
+                            pass
+                
+                # Adicionar fator explicativo
+                time_factors.append({
+                    "fator": "Urgência Legislativa",
+                    "descricao": "PL com sinais de tramitação prioritária",
+                    "impacto": "Redução significativa no tempo esperado",
+                    "explicacao": "Projetos com urgência têm prazos reduzidos em todas as etapas"
+                })
+            
+            # Calcular próximos passos prováveis
+            next_steps = TimelinePredictor.predict_next_steps(pl_details, situacao, tramitacao)
+            
+            # Adicionar análise de tendência política
+            political_trend = {
+                "tendencia": "Favorável" if risk_score > 60 else "Neutra" if risk_score > 40 else "Desfavorável",
+                "contexto_politico": contexto_ai["contexto_politico"],
+                "impacto_setorial": contexto_ai["impacto_setorial"]
+            }
+            
+            # Extrair detalhes de autoria
+            detalhes_autoria = self._extract_autoria_detalhada(pl_details)
+            
+            # Limitar o risco a 0-100
+            risk_score = max(0, min(100, risk_score))
+            
+            # Montar análise completa aprimorada
+            analysis = {
                 "pl_id": pl_id,
                 "timestamp": datetime.now().timestamp(),
                 "data_atualizacao": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "error": "PL não encontrado"
+                "titulo": pl_details.get('Título', ''),
+                "autor": pl_details.get('Autor', ''),
+                "status_atual": {
+                    "local": situacao.get('Local', ''),
+                    "situacao": situacao.get('Situacao', ''),
+                    "data": situacao.get('Data', '')
+                },
+                "risco_aprovacao": {
+                    "score": risk_score,
+                    "nivel": RiskCalculator.risk_level_name(risk_score),
+                    "fatores": risk_factors
+                },
+                "tempo_estimado": {
+                    "estimativa": time_estimate,
+                    "fatores": time_factors
+                },
+                "proximos_passos": next_steps,
+                "analise_politica": political_trend,
+                "ultimos_eventos": tramitacao[:5] if tramitacao else [],
+                "detalhes_autoria": detalhes_autoria,
+                "projetos_relacionados": pl_details.get('projetos_relacionados', []) if 'projetos_relacionados' in pl_details else []
             }
-            return error_result
-        
-        # Extrair informações relevantes
-        situacao = pl_details.get('Situacao', {})
-        tramitacao = pl_details.get('Tramitacao_Detalhada', [])
-        
-        # Realizar análise contextual
-        contexto_ai = ContextAnalyzer.analyze_context(pl_details, situacao, tramitacao)
-        
-        # Calcular o risco de aprovação
-        risk_score, risk_factors = RiskCalculator.calculate_approval_risk(pl_details, situacao, tramitacao)
-        
-        # Adicionar fatores de risco baseados na análise contextual
-        if contexto_ai["urgencia"] == "Alta":
-            risk_score += 10
-            risk_factors.append({
-                "fator": "Urgência Legislativa",
-                "descricao": "PL com indicadores de tramitação urgente",
-                "impacto": "+10 pontos",
-                "explicacao": "A urgência aumenta significativamente as chances de aprovação rápida"
-            })
-        
-        if contexto_ai["controversia"] == "Alta":
-            risk_score -= 5
-            risk_factors.append({
-                "fator": "Controvérsia",
-                "descricao": "PL apresenta elementos controversos",
-                "impacto": "-5 pontos",
-                "explicacao": "Temas controversos tendem a enfrentar maior resistência e debate"
-            })
-        
-        # Calcular tempo estimado para aprovação
-        time_estimate, time_factors = TimelinePredictor.estimate_approval_time(pl_details, situacao, tramitacao)
-        
-        # Ajustar estimativa baseada na análise contextual
-        if contexto_ai["urgencia"] == "Alta":
-            # Reduzir tempo estimado
-            if "meses" in time_estimate:
-                parts = time_estimate.split("-")
-                if len(parts) == 2:
-                    try:
-                        min_months = int(parts[0])
-                        max_months = int(parts[1].replace(" meses", ""))
-                        time_estimate = f"{max(1, min_months-2)}-{max(3, max_months-3)} meses"
-                    except ValueError:
-                        pass
             
-            # Adicionar fator explicativo
-            time_factors.append({
-                "fator": "Urgência Legislativa",
-                "descricao": "PL com sinais de tramitação prioritária",
-                "impacto": "Redução significativa no tempo esperado",
-                "explicacao": "Projetos com urgência têm prazos reduzidos em todas as etapas"
-            })
-        
-        # Calcular próximos passos prováveis
-        next_steps = TimelinePredictor.predict_next_steps(pl_details, situacao, tramitacao)
-        
-        # Adicionar análise de tendência política
-        political_trend = {
-            "tendencia": "Favorável" if risk_score > 60 else "Neutra" if risk_score > 40 else "Desfavorável",
-            "contexto_politico": contexto_ai["contexto_politico"],
-            "impacto_setorial": contexto_ai["impacto_setorial"]
-        }
-        
-        # Extrair detalhes de autoria
-        detalhes_autoria = self._extract_autoria_detalhada(pl_details)
-        
-        # Limitar o risco a 0-100
-        risk_score = max(0, min(100, risk_score))
-        
-        # Montar análise completa aprimorada
-        analysis = {
-            "pl_id": pl_id,
-            "timestamp": datetime.now().timestamp(),
-            "data_atualizacao": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "titulo": pl_details.get('Título', ''),
-            "autor": pl_details.get('Autor', ''),
-            "status_atual": {
-                "local": situacao.get('Local', ''),
-                "situacao": situacao.get('Situacao', ''),
-                "data": situacao.get('Data', '')
-            },
-            "risco_aprovacao": {
-                "score": risk_score,
-                "nivel": RiskCalculator.risk_level_name(risk_score),
-                "fatores": risk_factors
-            },
-            "tempo_estimado": {
-                "estimativa": time_estimate,
-                "fatores": time_factors
-            },
-            "proximos_passos": next_steps,
-            "analise_politica": political_trend,
-            "ultimos_eventos": tramitacao[:5] if tramitacao else [],
-            "detalhes_autoria": detalhes_autoria,
-            "projetos_relacionados": pl_details.get('projetos_relacionados', []) if 'projetos_relacionados' in pl_details else []
-        }
-        
-        # Salvar em cache (memória)
-        self.analysis_cache[pl_id] = analysis
-        
-        # Salvar em disco
-        try:
-            cache_file = os.path.join(self.data_dir, f"{sigla}_{numero}_{ano}_risk.json")
-            with open(cache_file, 'w', encoding='utf-8') as f:
-                json.dump(analysis, f, ensure_ascii=False, indent=4)
-                logger.info(f"Análise de risco salva em disco: {cache_file}")
+            # Salvar em cache (memória)
+            self.analysis_cache[pl_id] = analysis
+            
+            # Salvar em disco
+            try:
+                cache_file = os.path.join(self.data_dir, f"{sigla}_{numero}_{ano}_risk.json")
+                with open(cache_file, 'w', encoding='utf-8') as f:
+                    json.dump(analysis, f, ensure_ascii=False, indent=4)
+                    logger.info(f"Análise de risco salva em disco: {cache_file}")
+            except Exception as e:
+                logger.error(f"Erro ao salvar análise em disco para {pl_id}: {str(e)}")
+            
+            return analysis
         except Exception as e:
-            logger.error(f"Erro ao salvar análise em disco para {pl_id}: {str(e)}")
+            logger.error(f"Erro durante análise de risco do PL {pl_id}: {str(e)}")
+            logger.debug(traceback.format_exc())
+            
+            # Fornecer uma análise básica em caso de erro
+            return self._create_fallback_analysis(sigla, numero, ano)
+    
+    def _create_fallback_analysis(self, sigla: str, numero: str, ano: str) -> Dict[str, Any]:
+        """
+        Cria uma análise básica para fallback em caso de erro na análise principal.
         
-        return analysis
+        Args:
+            sigla: Sigla do PL
+            numero: Número do PL
+            ano: Ano do PL
+            
+        Returns:
+            Dicionário com análise básica
+        """
+        pl_id = f"{sigla} {numero}/{ano}"
+        logger.info(f"Criando análise de fallback para {pl_id}")
+        
+        try:
+            # Tentar buscar dados básicos
+            pl_id_info = {
+                'sigla': sigla,
+                'numero': numero,
+                'ano': ano
+            }
+            
+            pl_basic = self.provider.get_basic_pl_info(pl_id_info)
+            
+            titulo = "Título não disponível"
+            autor = "Autor não disponível"
+            status = "Status não disponível"
+            
+            if pl_basic:
+                titulo = pl_basic.get('Título', titulo)
+                autor = pl_basic.get('Autor', autor)
+                status = pl_basic.get('Status', status)
+            
+            return {
+                "pl_id": pl_id,
+                "timestamp": datetime.now().timestamp(),
+                "data_atualizacao": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "titulo": titulo,
+                "autor": autor,
+                "status_atual": {
+                    "local": status.split(" - ")[1] if " - " in status else "",
+                    "situacao": status.split(" - ")[0] if " - " in status else status,
+                    "data": ""
+                },
+                "risco_aprovacao": {
+                    "score": 50,
+                    "nivel": "Médio",
+                    "fatores": [{
+                        "fator": "Análise simplificada",
+                        "descricao": "Usando dados básicos do collector",
+                        "impacto": "Neutro",
+                        "explicacao": "Analisador detalhado falhou, usando estimativa básica"
+                    }]
+                },
+                "tempo_estimado": {
+                    "estimativa": "6-12 meses",
+                    "fatores": [{
+                        "fator": "Estimativa padrão",
+                        "descricao": "Baseado em tempo médio de tramitação no Congresso",
+                        "impacto": "Neutro",
+                        "explicacao": "Análise detalhada falhou, usando estimativa padrão"
+                    }]
+                },
+                "proximos_passos": [
+                    {
+                        "passo": "Análise em comissões",
+                        "probabilidade": "Média",
+                        "observacao": "Processo padrão de tramitação",
+                        "contexto": "Análise simplificada, sem avaliação detalhada"
+                    },
+                    {
+                        "passo": "Votação em plenário",
+                        "probabilidade": "Baixa",
+                        "observacao": "Após análise em comissões",
+                        "contexto": "Processo padrão de tramitação legislativa"
+                    }
+                ],
+                "analise_politica": {
+                    "tendencia": "Indefinida",
+                    "contexto_politico": f"PL apresentado por {autor}. Status atual: {status}.",
+                    "impacto_setorial": "Análise completa indisponível. Recomenda-se avaliar o texto completo do PL."
+                },
+                "ultimos_eventos": [],
+                "detalhes_autoria": [
+                    {
+                        "nome": autor,
+                        "tipo": "Parlamentar" if "Senador" in autor or "Deputado" in autor else "Não identificado",
+                        "partido": "",
+                        "uf": ""
+                    }
+                ]
+            }
+        except Exception as e:
+            logger.error(f"Erro ao criar análise de fallback para {pl_id}: {str(e)}")
+            
+            # Fallback absoluto
+            return {
+                "pl_id": pl_id,
+                "timestamp": datetime.now().timestamp(),
+                "data_atualizacao": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "titulo": "PL não disponível para análise detalhada",
+                "error": "Erro na análise de risco",
+                "error_details": str(e),
+                "risco_aprovacao": {"score": 50, "nivel": "Médio", "fatores": []},
+                "tempo_estimado": {"estimativa": "Não disponível", "fatores": []},
+                "proximos_passos": [{"passo": "Análise não disponível", "probabilidade": "N/A", "observacao": "Erro na análise de risco"}]
+            }
+    
+    def _analyze_context_with_ai(self, pl_details: Dict[str, Any], tramitacao: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Realiza análise contextual do PL usando modelos de IA, se disponíveis.
+        Caso contrário, usa análise baseada em regras.
+        
+        Args:
+            pl_details: Detalhes do PL
+            tramitacao: Histórico de tramitação
+            
+        Returns:
+            Dicionário com análise contextual
+        """
+        # Verificar se podemos usar modelos avançados
+        use_advanced_models = any(self.models_available.values())
+        
+        if use_advanced_models:
+            try:
+                # Selecionar modelo mais adequado disponível
+                model_key = None
+                for key in ["jurisbert_sts", "legal_bert", "bertimbau_large"]:
+                    if self.models_available.get(key, False):
+                        model_key = key
+                        break
+                
+                if model_key:
+                    # Carregar modelo
+                    model = self.model_manager.load_model(model_key)
+                    
+                    if model:
+                        # Preparar análise com modelo
+                        from ..models.bert_processor import BERTProcessor
+                        processor = BERTProcessor(model)
+                        
+                        # Extrair texto do PL para análise
+                        pl_text = ""
+                        if 'Texto' in pl_details and pl_details['Texto'].get('TextoIntegral'):
+                            pl_text = pl_details['Texto']['TextoIntegral']
+                        elif 'Título' in pl_details:
+                            pl_text = pl_details['Título']
+                        
+                        # Analisar urgência
+                        urgencia_categorias = ["Urgência alta", "Urgência média", "Urgência baixa"]
+                        urgencia_result = processor.classify_legal_text(pl_text, urgencia_categorias)
+                        urgencia = "Alta" if urgencia_result.get("Urgência alta", 0) > 0.5 else "Média" if urgencia_result.get("Urgência média", 0) > 0.5 else "Baixa"
+                        
+                        # Analisar controvérsia
+                        controversia_categorias = ["Alta controvérsia", "Média controvérsia", "Baixa controvérsia"]
+                        controversia_result = processor.classify_legal_text(pl_text, controversia_categorias)
+                        controversia = "Alta" if controversia_result.get("Alta controvérsia", 0) > 0.5 else "Média" if controversia_result.get("Média controvérsia", 0) > 0.5 else "Baixa"
+                        
+                        # Gerar contexto político e setorial
+                        if self.models_available.get("mt5", False):
+                            try:
+                                from ..models.t5_processor import T5Processor
+                                t5_model = self.model_manager.load_model("mt5")
+                                t5_processor = T5Processor(t5_model)
+                                
+                                contexto_politico = t5_processor.generate_legal_analysis(
+                                    pl_text, 
+                                    "Analisar o contexto político atual deste projeto de lei",
+                                    max_length=200
+                                )
+                                
+                                impacto_setorial = t5_processor.generate_legal_analysis(
+                                    pl_text,
+                                    "Analisar o impacto setorial potencial deste projeto de lei",
+                                    max_length=200
+                                )
+                            except Exception as e:
+                                logger.error(f"Erro na análise com T5: {str(e)}")
+                                contexto_politico = f"PL em tramitação, situação atual: {pl_details.get('Status', 'Não disponível')}"
+                                impacto_setorial = "Análise completa indisponível. Recomenda-se avaliar o texto completo do PL."
+                        else:
+                            contexto_politico = f"PL apresentado por {pl_details.get('Autor', 'autor não identificado')}. Status atual: {pl_details.get('Status', 'não disponível')}."
+                            impacto_setorial = "Análise completa indisponível. Recomenda-se avaliar o texto completo do PL."
+                        
+                        return {
+                            "urgencia": urgencia,
+                            "controversia": controversia,
+                            "contexto_politico": contexto_politico,
+                            "impacto_setorial": impacto_setorial
+                        }
+                
+                # Se chegou aqui, não foi possível usar os modelos
+                logger.warning("Não foi possível usar modelos de IA para análise contextual. Usando análise baseada em regras.")
+            except Exception as e:
+                logger.error(f"Erro na análise com IA: {str(e)}")
+                logger.debug(traceback.format_exc())
+        
+        # Fallback para análise baseada em regras
+        return ContextAnalyzer.analyze_context(pl_details, pl_details.get('Situacao', {}), tramitacao)
     
     def get_sector_risk_overview(self, sector_pls: List[Dict]) -> Dict[str, Any]:
         """
